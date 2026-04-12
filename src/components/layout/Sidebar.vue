@@ -1,0 +1,206 @@
+<template>
+  <div class="flex flex-col h-full bg-sidebar-bg text-sidebar-text no-select">
+    <!-- 账户切换区域 -->
+    <div class="p-2">
+      <AccountSwitcher
+        :collapsed="uiStore.sidebarCollapsed"
+        @add-account="emit('addAccount')"
+      />
+    </div>
+
+    <!-- 撰写按钮 -->
+    <div class="px-2 py-1.5 flex gap-1">
+      <button
+        class="flex-1 flex items-center justify-center gap-2 h-9 bg-accent hover:bg-accent-hover text-white rounded-lg text-sm font-medium interactive-btn"
+      >
+        <Plus :size="16" />
+        <span v-if="!uiStore.sidebarCollapsed">撰写</span>
+      </button>
+      <button
+        class="flex items-center justify-center w-9 h-9 bg-bg-secondary hover:bg-bg-hover border border-border-primary rounded-lg text-text-secondary interactive-btn"
+        :class="{ 'opacity-50 cursor-not-allowed': !uiStore.isOnline }"
+        :disabled="mailboxStore.syncing || !uiStore.isOnline"
+        :title="!uiStore.isOnline ? '离线状态' : mailboxStore.syncing ? '同步中...' : '同步邮件'"
+        @click="handleSync"
+      >
+        <WifiOff v-if="!uiStore.isOnline" :size="16" class="text-warning" />
+        <RefreshCw v-else :size="16" :class="{ 'animate-spin': mailboxStore.syncing }" />
+      </button>
+    </div>
+
+    <!-- 文件夹列表 -->
+    <nav class="flex-1 overflow-y-auto py-1 hide-scrollbar">
+      <div class="px-2 space-y-0.5">
+        <FolderItem
+          v-for="folder in folders"
+          :key="folder.id"
+          :icon="folder.icon"
+          :label="folder.label"
+          :count="folder.count"
+          :active="mailboxStore.currentFolder === folder.id"
+          :collapsed="uiStore.sidebarCollapsed"
+          @click="handleFolderClick(folder.id)"
+        />
+      </div>
+
+      <!-- 标签分组 -->
+      <div v-if="!uiStore.sidebarCollapsed && tags.length > 0" class="mt-4 px-2">
+        <div class="flex items-center justify-between px-2 py-1.5">
+          <span class="text-xs font-medium text-sidebar-text/50 uppercase tracking-wider">
+            标签
+          </span>
+        </div>
+        <TagList />
+      </div>
+    </nav>
+
+    <!-- 底部：设置 + 折叠 -->
+    <div class="p-2 border-t border-border-primary flex items-center gap-0.5">
+      <button
+        class="flex-1 flex items-center gap-2 p-2 rounded-md text-sidebar-text/60 hover:text-sidebar-text hover:bg-sidebar-hover transition-colors"
+        title="设置"
+        @click="handleSettingsClick"
+      >
+        <Settings :size="16" />
+        <span v-if="!uiStore.sidebarCollapsed" class="text-sm">设置</span>
+      </button>
+      <button
+        class="p-2 rounded-md text-sidebar-text/60 hover:text-sidebar-text hover:bg-sidebar-hover transition-colors"
+        :title="uiStore.sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'"
+        @click="uiStore.toggleSidebar"
+      >
+        <PanelLeftClose v-if="!uiStore.sidebarCollapsed" :size="16" />
+        <PanelLeftOpen v-else :size="16" />
+      </button>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import { useUiStore } from '@/stores/ui'
+import { useMailboxStore } from '@/stores/mailbox'
+import { useAccountStore } from '@/stores/account'
+import { useNotificationStore } from '@/stores/notification'
+import {
+  Inbox,
+  Plus,
+  Settings,
+  PanelLeftClose,
+  PanelLeftOpen,
+  RefreshCw,
+  WifiOff,
+  ShieldAlert
+} from 'lucide-vue-next'
+import FolderItem from './FolderItem.vue'
+import TagList from './TagList.vue'
+import AccountSwitcher from '@/components/accounts/AccountSwitcher.vue'
+import { getPhishingUnreadCount, getPhishingEmails } from '@/services/email/emailService'
+
+const emit = defineEmits<{
+  addAccount: []
+}>()
+
+const router = useRouter()
+const uiStore = useUiStore()
+const mailboxStore = useMailboxStore()
+const accountStore = useAccountStore()
+const notificationStore = useNotificationStore()
+
+// 钓鱼邮件未读数量
+const phishingUnreadCount = ref(0)
+
+// 加载钓鱼邮件未读数量
+async function loadPhishingUnreadCount() {
+  const account = accountStore.activeAccount
+  if (account) {
+    try {
+      phishingUnreadCount.value = await getPhishingUnreadCount(account.id)
+    } catch {
+      phishingUnreadCount.value = 0
+    }
+  }
+}
+
+// 监听账户变化，更新钓鱼邮件未读数量
+watch(() => accountStore.activeAccount, loadPhishingUnreadCount, { immediate: true })
+
+// 监听邮件列表变化，当钓鱼邮件被阅读后刷新未读数量
+watch(
+  () => mailboxStore.emails.map(e => e.isRead),
+  () => {
+    // 如果当前在钓鱼邮件文件夹，邮件阅读后需要刷新未读数量
+    if (mailboxStore.currentFolder === 'phishing') {
+      loadPhishingUnreadCount()
+    }
+  }
+)
+
+// 导出刷新函数供外部调用
+function refreshPhishingCount() {
+  loadPhishingUnreadCount()
+}
+
+const folders = computed(() => [
+  { id: 'inbox', icon: Inbox, label: '收件箱', count: mailboxStore.unreadCount },
+  // { id: 'sent', icon: Send, label: '已发送', count: 0 },  // 功能未实现
+  // { id: 'drafts', icon: FileText, label: '草稿箱', count: 0 },  // 功能未实现
+  { id: 'phishing', icon: ShieldAlert, label: '钓鱼邮件', count: phishingUnreadCount.value },
+  // { id: 'archive', icon: Archive, label: '归档', count: 0 },  // 功能未实现
+  // { id: 'trash', icon: Trash2, label: '已删除', count: 0 }  // 功能未实现
+])
+
+const tags = [
+  { id: '1', name: '工作', color: '#3b82f6' },
+  { id: '2', name: '个人', color: '#10b981' },
+  { id: '3', name: '重要', color: '#ef4444' }
+]
+
+async function handleFolderClick(folderId: string) {
+  mailboxStore.setCurrentFolder(folderId)
+  mailboxStore.clearSelection()
+  const account = accountStore.activeAccount
+  if (account) {
+    if (folderId === 'phishing') {
+      // 加载钓鱼邮件列表
+      await loadPhishingEmails(account.id)
+    } else {
+      await mailboxStore.loadEmails(account.id, folderId)
+    }
+  }
+}
+
+async function loadPhishingEmails(accountId: string) {
+  mailboxStore.loading = true
+  try {
+    const emails = await getPhishingEmails(accountId)
+    mailboxStore.emails = emails
+  } catch (e) {
+    console.error('加载钓鱼邮件失败:', e)
+  } finally {
+    mailboxStore.loading = false
+  }
+}
+
+async function handleSync() {
+  if (!uiStore.isOnline) {
+    notificationStore.warning('离线状态', '无法同步，请检查网络连接')
+    return
+  }
+
+  const account = accountStore.activeAccount
+  if (account && !mailboxStore.syncing) {
+    try {
+      await mailboxStore.sync(account.id)
+    } catch (e) {
+      // Error notification already shown by mailboxStore.sync()
+      console.warn('Sync failed:', e)
+    }
+  }
+}
+
+function handleSettingsClick() {
+  router.push('/settings/accounts')
+}
+</script>

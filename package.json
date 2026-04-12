@@ -1,0 +1,45 @@
+{
+  "name": "aethermail",
+  "version": "0.1.0",
+  "description": "A modern email client",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "keywords": [
+    "email",
+    "tauri",
+    "vue"
+  ],
+  "author": "AetherMail Team",
+  "license": "MIT",
+  "dependencies": {
+    "@tailwindcss/vite": "^4.2.2",
+    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/plugin-dialog": "^2.7.0",
+    "@tauri-apps/plugin-notification": "^2.3.3",
+    "@tauri-apps/plugin-opener": "^2.5.3",
+    "@tauri-apps/plugin-sql": "^2.4.0",
+    "@tauri-apps/plugin-fs": "^2.0.0",
+    "dompurify": "^3.3.3",
+    "lucide-vue-next": "^1.0.0",
+    "openai": "^4.91.0",
+    "pinia": "^3.0.4",
+    "tailwindcss": "^4.2.2",
+    "typescript": "^5.8.0",
+    "vue": "^3.5.32",
+    "vue-router": "^5.0.4"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.10.1",
+    "@vitejs/plugin-vue": "^6.0.5",
+    "vite": "^6.0.0",
+    "vue-tsc": "^2.0.0"
+  }
+}
