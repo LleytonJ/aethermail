@@ -5,15 +5,20 @@ import {
   getActiveAccount,
   setActiveAccount as setServiceActiveAccount,
   addAccount as addServiceAccount,
+  addImapAccount as addServiceImapAccount,
   updateAccount as updateServiceAccount,
   deleteAccount as deleteServiceAccount,
   testConnection,
+  testImapConnection,
+  testConnectionByProtocol,
   type Pop3Config,
+  type ImapConfig,
   type ConnectionTestResult,
-  type Account
+  type Account,
+  type ProtocolType
 } from '@/services/email/accountService'
 
-export type { Account } from '@/services/email/accountService'
+export type { Account, ProtocolType } from '@/services/email/accountService'
 
 export const useAccountStore = defineStore('account', () => {
   // State
@@ -101,6 +106,59 @@ export const useAccountStore = defineStore('account', () => {
     } catch (e) {
       console.error('[accountStore] addAccount - 错误:', e)
       error.value = e instanceof Error ? e.message : '添加账户失败'
+      throw e
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function addImapAccount(
+    email: string,
+    displayName: string | null,
+    password: string,
+    imapHost: string,
+    imapPort: number,
+    imapUseSsl: boolean
+  ) {
+    console.log('[accountStore] addImapAccount - 开始')
+    console.log('[accountStore] addImapAccount - 参数:', {
+      email,
+      displayName,
+      password: '***',
+      imapHost,
+      imapPort,
+      imapUseSsl
+    })
+
+    loading.value = true
+    error.value = null
+    try {
+      const newAccount = await addServiceImapAccount(
+        email,
+        displayName,
+        password,
+        imapHost,
+        imapPort,
+        imapUseSsl
+      )
+
+      console.log('[accountStore] addImapAccount - 成功:', newAccount)
+
+      // Deactivate other accounts
+      accounts.value.forEach(a => {
+        a.isActive = false
+      })
+
+      accounts.value.push({
+        ...newAccount,
+        isActive: true
+      })
+      activeAccountId.value = newAccount.id
+
+      return newAccount
+    } catch (e) {
+      console.error('[accountStore] addImapAccount - 错误:', e)
+      error.value = e instanceof Error ? e.message : '添加 IMAP 账户失败'
       throw e
     } finally {
       loading.value = false
@@ -199,6 +257,19 @@ export const useAccountStore = defineStore('account', () => {
     return testConnection(config)
   }
 
+  // 测试 IMAP 连接
+  async function testImapConn(config: ImapConfig): Promise<ConnectionTestResult> {
+    return testImapConnection(config)
+  }
+
+  // 根据协议测试连接（通用接口）
+  async function testConnByProtocol(
+    protocol: ProtocolType,
+    config: Pop3Config | ImapConfig
+  ): Promise<ConnectionTestResult> {
+    return testConnectionByProtocol(protocol, config)
+  }
+
   return {
     accounts,
     activeAccountId,
@@ -209,10 +280,13 @@ export const useAccountStore = defineStore('account', () => {
     setAccounts,
     setActiveAccount,
     addAccount,
+    addImapAccount,
     removeAccount,
     updateAccount,
     getActiveAccountLocal,
     init,
-    testPop3Connection
+    testPop3Connection,
+    testImapConn,
+    testConnByProtocol
   }
 })

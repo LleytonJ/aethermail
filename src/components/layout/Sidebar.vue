@@ -96,7 +96,7 @@ import {
 import FolderItem from './FolderItem.vue'
 import TagList from './TagList.vue'
 import AccountSwitcher from '@/components/accounts/AccountSwitcher.vue'
-import { getPhishingUnreadCount, getPhishingEmails } from '@/services/email/emailService'
+import { getPhishingUnreadCount, getPhishingEmails, getUnreadCount } from '@/services/email/emailService'
 
 const emit = defineEmits<{
   addAccount: []
@@ -123,8 +123,43 @@ async function loadPhishingUnreadCount() {
   }
 }
 
-// 监听账户变化，更新钓鱼邮件未读数量
-watch(() => accountStore.activeAccount, loadPhishingUnreadCount, { immediate: true })
+// 加载收件箱未读数量
+async function loadInboxUnreadCount() {
+  const account = accountStore.activeAccount
+  if (account) {
+    try {
+      mailboxStore.unreadCount = await getUnreadCount(account.id)
+    } catch {
+      mailboxStore.unreadCount = 0
+    }
+  }
+}
+
+// 监听账户变化，更新所有未读数量并自动加载收件箱
+watch(
+  () => accountStore.activeAccount,
+  async (account) => {
+    if (!account) return
+
+    // 更新未读数量
+    await loadInboxUnreadCount()
+    await loadPhishingUnreadCount()
+
+    // 自动切换到收件箱并加载邮件
+    mailboxStore.setCurrentFolder('inbox')
+    await mailboxStore.loadEmails(account.id, 'inbox')
+
+    // 自动选择第一封邮件并显示详情
+    if (mailboxStore.emails.length > 0) {
+      const firstEmail = mailboxStore.emails[0]
+      await mailboxStore.selectEmail(firstEmail.id)
+      await mailboxStore.markAsRead(firstEmail.id)
+    } else {
+      mailboxStore.clearSelection()
+    }
+  },
+  { immediate: true }
+)
 
 // 监听邮件列表变化，当钓鱼邮件被阅读后刷新未读数量
 watch(
@@ -136,11 +171,6 @@ watch(
     }
   }
 )
-
-// 导出刷新函数供外部调用
-function refreshPhishingCount() {
-  loadPhishingUnreadCount()
-}
 
 const folders = computed(() => [
   { id: 'inbox', icon: Inbox, label: '收件箱', count: mailboxStore.unreadCount },

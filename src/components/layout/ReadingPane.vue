@@ -116,7 +116,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useMailboxStore } from '@/stores/mailbox'
-import { useAccountStore } from '@/stores/account'
 import { useNotificationStore } from '@/stores/notification'
 import { Mail, Reply, Forward, Star, Archive, Trash2, ShieldAlert, Undo2 } from 'lucide-vue-next'
 import EmailHeader from '../email/EmailHeader.vue'
@@ -125,7 +124,6 @@ import AttachmentList from '../email/AttachmentList.vue'
 import { updatePhishingStatus } from '@/services/email/emailService'
 
 const store = useMailboxStore()
-const accountStore = useAccountStore()
 const notificationStore = useNotificationStore()
 
 const currentEmail = computed(() => store.selectedEmail)

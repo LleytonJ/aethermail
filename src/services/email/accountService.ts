@@ -16,6 +16,22 @@ export interface Pop3Config {
 }
 
 /**
+ * IMAP 配置接口
+ */
+export interface ImapConfig {
+  host: string
+  port: number
+  use_ssl: boolean
+  username: string
+  password: string
+}
+
+/**
+ * 协议类型
+ */
+export type ProtocolType = 'pop3' | 'imap'
+
+/**
  * 账户配置接口（后端返回结构）
  */
 export interface AccountConfig {
@@ -23,9 +39,13 @@ export interface AccountConfig {
   email: string
   display_name: string | null
   password: string
+  protocol: ProtocolType
   pop3_host: string
   pop3_port: number
   use_ssl: boolean
+  imap_host: string
+  imap_port: number
+  imap_use_ssl: boolean
   is_active: boolean
   phishing_detection_enabled: boolean
 }
@@ -38,6 +58,7 @@ export interface Account {
   name: string
   email: string
   isActive: boolean
+  protocol: ProtocolType
   provider: string
   incomingServer: string
   outgoingServer: string
@@ -78,6 +99,39 @@ export async function testConnection(config: Pop3Config): Promise<ConnectionTest
 }
 
 /**
+ * 测试 IMAP 连接
+ */
+export async function testImapConnection(config: ImapConfig): Promise<ConnectionTestResult> {
+  try {
+    const result = await invoke<ConnectionTestResult>('test_imap_connection', {
+      host: config.host,
+      port: config.port,
+      useSsl: config.use_ssl,
+      email: config.username,
+      password: config.password
+    })
+
+    return result
+  } catch (error) {
+    throw error
+  }
+}
+
+/**
+ * 根据 protocol 测试连接（通用接口）
+ */
+export async function testConnectionByProtocol(
+  protocol: ProtocolType,
+  config: Pop3Config | ImapConfig
+): Promise<ConnectionTestResult> {
+  if (protocol === 'imap') {
+    return testImapConnection(config as ImapConfig)
+  } else {
+    return testConnection(config as Pop3Config)
+  }
+}
+
+/**
  * 添加 POP3 账户
  */
 export async function addAccount(
@@ -106,6 +160,7 @@ export async function addAccount(
       name: result.display_name || '',
       email: result.email,
       isActive: result.is_active,
+      protocol: result.protocol,
       provider: 'pop3',
       incomingServer: result.pop3_host,
       outgoingServer: '',
@@ -120,25 +175,92 @@ export async function addAccount(
 }
 
 /**
+ * 添加 IMAP 账户
+ */
+export async function addImapAccount(
+  email: string,
+  displayName: string | null,
+  password: string,
+  imapHost: string,
+  imapPort: number,
+  imapUseSsl: boolean
+): Promise<Account> {
+  try {
+    const result = await invoke<AccountConfig>('add_imap_account', {
+      email,
+      password,
+      displayName,
+      imapHost,
+      imapPort,
+      imapUseSsl
+    })
+
+    // 转换为前端 Account 格式
+    return {
+      id: result.id,
+      name: result.display_name || '',
+      email: result.email,
+      isActive: result.is_active,
+      protocol: result.protocol,
+      provider: 'imap',
+      incomingServer: result.imap_host,
+      outgoingServer: '',
+      incomingPort: result.imap_port,
+      outgoingPort: 0,
+      useSsl: result.imap_use_ssl,
+      phishingDetectionEnabled: result.phishing_detection_enabled
+    }
+  } catch (error) {
+    throw error
+  }
+}
+
+/**
+ * 根据协议类型添加账户（通用接口）
+ */
+export async function addAccountByProtocol(
+  protocol: ProtocolType,
+  email: string,
+  displayName: string | null,
+  password: string,
+  host: string,
+  port: number,
+  useSsl: boolean
+): Promise<Account> {
+  if (protocol === 'imap') {
+    return addImapAccount(email, displayName, password, host, port, useSsl)
+  } else {
+    return addAccount(email, displayName, password, host, port, useSsl)
+  }
+}
+
+/**
+ * 转换 AccountConfig 为 Account
+ */
+function convertToAccount(config: AccountConfig): Account {
+  const isIncomingImap = config.protocol === 'imap'
+  return {
+    id: config.id,
+    name: config.display_name || '',
+    email: config.email,
+    isActive: config.is_active,
+    protocol: config.protocol,
+    provider: config.protocol,
+    incomingServer: isIncomingImap ? config.imap_host : config.pop3_host,
+    outgoingServer: '',
+    incomingPort: isIncomingImap ? config.imap_port : config.pop3_port,
+    outgoingPort: 0,
+    useSsl: isIncomingImap ? config.imap_use_ssl : config.use_ssl,
+    phishingDetectionEnabled: config.phishing_detection_enabled
+  }
+}
+
+/**
  * 获取所有账户
  */
 export async function getAccounts(): Promise<Account[]> {
   const result = await invoke<AccountConfig[]>('get_accounts')
-
-  // 转换字段名（后端 snake_case -> 前端 camelCase）
-  return result.map(a => ({
-    id: a.id,
-    name: a.display_name || '',
-    email: a.email,
-    isActive: a.is_active,
-    provider: 'pop3',
-    incomingServer: a.pop3_host,
-    outgoingServer: '',
-    incomingPort: a.pop3_port,
-    outgoingPort: 0,
-    useSsl: a.use_ssl,
-    phishingDetectionEnabled: a.phishing_detection_enabled
-  }))
+  return result.map(convertToAccount)
 }
 
 /**
@@ -146,23 +268,7 @@ export async function getAccounts(): Promise<Account[]> {
  */
 export async function getActiveAccount(): Promise<Account | null> {
   const result = await invoke<AccountConfig | null>('get_active_account')
-
-  if (!result) return null
-
-  // 转换字段名
-  return {
-    id: result.id,
-    name: result.display_name || '',
-    email: result.email,
-    isActive: result.is_active,
-    provider: 'pop3',
-    incomingServer: result.pop3_host,
-    outgoingServer: '',
-    incomingPort: result.pop3_port,
-    outgoingPort: 0,
-    useSsl: result.use_ssl,
-    phishingDetectionEnabled: result.phishing_detection_enabled
-  }
+  return result ? convertToAccount(result) : null
 }
 
 /**
@@ -191,21 +297,7 @@ export async function updateAccount(
     port: pop3Port,
     useSsl
   })
-
-  // 转换为前端 Account 格式
-  return {
-    id: result.id,
-    name: result.display_name || '',
-    email: result.email,
-    isActive: result.is_active,
-    provider: 'pop3',
-    incomingServer: result.pop3_host,
-    outgoingServer: '',
-    incomingPort: result.pop3_port,
-    outgoingPort: 0,
-    useSsl: result.use_ssl,
-    phishingDetectionEnabled: result.phishing_detection_enabled
-  }
+  return convertToAccount(result)
 }
 
 /**
@@ -223,19 +315,5 @@ export async function updatePhishingDetection(id: string, enabled: boolean): Pro
     id,
     phishingDetectionEnabled: enabled
   })
-
-  // 转换为前端 Account 格式
-  return {
-    id: result.id,
-    name: result.display_name || '',
-    email: result.email,
-    isActive: result.is_active,
-    provider: 'pop3',
-    incomingServer: result.pop3_host,
-    outgoingServer: '',
-    incomingPort: result.pop3_port,
-    outgoingPort: 0,
-    useSsl: result.use_ssl,
-    phishingDetectionEnabled: result.phishing_detection_enabled
-  }
+  return convertToAccount(result)
 }

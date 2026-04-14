@@ -7,8 +7,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::pop3::{Pop3Client, Pop3Config, Pop3Credentials, ParsedEmail, EmailAttachment};
+use crate::imap::{ImapClient, ImapConfig, ImapCredentials};
 use crate::storage::{Database, DbEmail, DbAttachment};
-use crate::commands::account::get_accounts;
+use crate::commands::account::{get_accounts, ProtocolType};
 
 /// Global database instance
 static DB: std::sync::OnceLock<Arc<RwLock<Option<Database>>>> = std::sync::OnceLock::new();
@@ -105,7 +106,6 @@ pub struct SyncResult {
 }
 
 /// Sync emails for an account
-/// Sync emails for an account
 #[tauri::command]
 pub async fn sync_emails(account_id: String) -> Result<SyncResult, String> {
     // Get account config
@@ -114,6 +114,17 @@ pub async fn sync_emails(account_id: String) -> Result<SyncResult, String> {
         .iter()
         .find(|a| a.id == account_id)
         .ok_or_else(|| "账户不存在".to_string())?;
+
+    // Branch based on protocol type
+    match account.protocol {
+        ProtocolType::Pop3 => sync_via_pop3(account).await,
+        ProtocolType::Imap => sync_via_imap(account).await,
+    }
+}
+
+/// Sync emails via POP3 protocol
+async fn sync_via_pop3(account: &crate::commands::account::AccountConfig) -> Result<SyncResult, String> {
+    let account_id = account.id.clone();
 
     // Create POP3 client
     let config = Pop3Config {
@@ -224,6 +235,118 @@ pub async fn sync_emails(account_id: String) -> Result<SyncResult, String> {
         new: saved,
         success: true,
         message: format!("同步完成，新增 {} 封邮件（共发现 {} 封新邮件）", saved, total_new),
+    })
+}
+
+/// Sync emails via IMAP protocol
+async fn sync_via_imap(account: &crate::commands::account::AccountConfig) -> Result<SyncResult, String> {
+    let account_id = account.id.clone();
+
+    // Create IMAP client
+    let config = ImapConfig {
+        host: account.imap_host.clone(),
+        port: account.imap_port,
+        use_ssl: account.imap_use_ssl,
+    };
+    let credentials = ImapCredentials {
+        username: account.email.clone(),
+        password: account.password.clone(),
+    };
+
+    let client = ImapClient::new(config, credentials);
+
+    // Connect to server
+    let mut session = client.connect().await?;
+
+    // Select INBOX
+    let mailbox_status = session.select_inbox().await?;
+    let total = mailbox_status.messages;
+
+    // Get UID list from server
+    let server_uids = session.get_uid_list().await?;
+
+    // Get existing UIDLs from database
+    let db = get_db().await?;
+    let existing_uidls = db.get_existing_uidls(&account_id).await?;
+
+    // Filter new UIDs (convert existing_uidls from String to u32 for comparison)
+    let existing_uids: Vec<u32> = existing_uidls
+        .iter()
+        .filter_map(|uidl| uidl.parse::<u32>().ok())
+        .collect();
+
+    let new_uids: Vec<u32> = server_uids
+        .into_iter()
+        .filter(|uid| !existing_uids.contains(uid))
+        .collect();
+
+    let total_new = new_uids.len() as u32;
+
+    // Download and save new emails (fetch the latest one for now)
+    let mut saved = 0u32;
+    if let Some(&latest_uid) = new_uids.last() {
+        match session.fetch_email(latest_uid).await {
+            Ok(imap_message) => {
+                // Parse email using mail-parser
+                let uidl = format!("{}", imap_message.uid);
+                let parsed = parse_email(&imap_message.raw_content, &uidl);
+
+                // Create database record (use imap-{uid} as id)
+                let db_email = DbEmail {
+                    id: format!("imap-{}-{}", account_id, imap_message.uid),
+                    account_id: account_id.clone(),
+                    uidl: uidl.clone(),
+                    from_address: parsed.from_address,
+                    from_name: parsed.from_name,
+                    to_addresses: serde_json::to_string(&parsed.to_addresses).unwrap_or_default(),
+                    cc_addresses: serde_json::to_string(&parsed.cc_addresses).unwrap_or_default(),
+                    subject: parsed.subject,
+                    body_text: parsed.body_text,
+                    body_html: parsed.body_html,
+                    date: parsed.date.unwrap_or(0),
+                    is_read: false,
+                    is_starred: false,
+                    has_attachment: parsed.has_attachments,
+                    is_phishing: false,
+                    phishing_reasons: None,
+                };
+
+                let email_id = db_email.id.clone();
+
+                // Save email
+                if db.save_email(&db_email).await.is_ok() {
+                    // Save attachments
+                    if !parsed.attachments.is_empty() {
+                        for att in parsed.attachments {
+                            let db_att = DbAttachment {
+                                id: format!("att-{}", uuid::Uuid::new_v4()),
+                                email_id: email_id.clone(),
+                                filename: att.filename,
+                                mime_type: att.mime_type,
+                                size: att.size as i64,
+                                content_id: att.content_id,
+                                content: att.content.map(|c| c.into_bytes()),
+                            };
+                            let _ = db.save_attachment(&db_att).await;
+                        }
+                    }
+                    saved += 1;
+                }
+            }
+            Err(e) => {
+                eprintln!("下载邮件 UID {} 失败: {}", latest_uid, e);
+            }
+        }
+    }
+
+    // Logout
+    session.logout().await?;
+
+    Ok(SyncResult {
+        total,
+        new: saved,
+        success: true,
+        message: format!("IMAP 同步完成，新增 {} 封邮件（共发现 {} 封新邮件）", saved, total_new),
     })
 }
 

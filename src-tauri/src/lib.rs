@@ -1,6 +1,7 @@
 //! AetherMail - A modern email client
 
 mod pop3;
+mod imap;
 mod storage;
 mod commands;
 
@@ -33,7 +34,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Account commands
             commands::test_pop3_connection,
+            commands::test_imap_connection,
             commands::add_pop3_account,
+            commands::add_imap_account,
             commands::get_accounts,
             commands::get_active_account,
             commands::set_active_account,

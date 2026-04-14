@@ -1,17 +1,23 @@
 <template>
-  <div ref="contentRef" class="p-5">
-    <div
+  <div class="email-body-container">
+    <!-- HTML 邮件使用 iframe 完全隔离 -->
+    <iframe
       v-if="html"
-      class="email-content prose prose-invert max-w-none"
-      v-html="sanitizedHtml"
-      @click="handleClick"
-    ></div>
+      ref="htmlFrame"
+      class="email-iframe"
+      sandbox="allow-same-origin"
+      @load="onFrameLoad"
+    ></iframe>
+
+    <!-- 纯文本邮件直接显示 -->
     <div
       v-else-if="text"
-      class="email-content prose prose-invert max-w-none whitespace-pre-wrap"
+      class="email-text-content p-5 whitespace-pre-wrap text-text-secondary text-sm leading-relaxed"
     >
       {{ text }}
     </div>
+
+    <!-- 空状态 -->
     <div v-else class="text-text-muted text-center py-12">
       <Mail :size="32" class="mx-auto mb-3 opacity-30" />
       <p class="text-sm">暂无正文内容</p>
@@ -45,7 +51,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, watch, onMounted, nextTick } from 'vue'
 import DOMPurify from 'dompurify'
 import { Mail } from 'lucide-vue-next'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -59,59 +65,145 @@ interface Props {
 
 const props = defineProps<Props>()
 
-const contentRef = ref<HTMLElement | null>(null)
+const htmlFrame = ref<HTMLIFrameElement | null>(null)
 const showLinkDialog = ref(false)
 const pendingLinkUrl = ref('')
 
-const sanitizedHtml = computed(() => {
-  if (!props.html) return ''
-  return DOMPurify.sanitize(props.html, {
+// 邮件内容的内联样式（不影响外部）
+const emailStyles = `
+  body {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: #cbd5e1;
+    font-size: 14px;
+    line-height: 1.7;
+    background: transparent;
+    margin: 0;
+    padding: 20px;
+  }
+  p { margin: 0 0 1em 0; }
+  p:last-child { margin-bottom: 0; }
+  a { color: #818cf8; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  img { max-width: 100%; height: auto; border-radius: 8px; margin: 1em 0; }
+  blockquote {
+    border-left: 3px solid rgba(255, 255, 255, 0.1);
+    padding-left: 1rem;
+    margin: 1em 0;
+    color: #64748b;
+    font-style: italic;
+  }
+  pre {
+    background: rgba(51, 65, 85, 0.75);
+    padding: 1rem;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 1em 0;
+  }
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.9em;
+    background: rgba(51, 65, 85, 0.75);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+  }
+  pre code { background: none; padding: 0; }
+  ul, ol { padding-left: 1.5rem; margin: 1em 0; }
+  li { margin: 0.25em 0; }
+  h1, h2, h3, h4 { color: #f8fafc; font-weight: 600; margin: 1.5em 0 0.5em 0; }
+  table { width: 100%; border-collapse: collapse; margin: 1em 0; }
+  th, td { border: 1px solid rgba(255, 255, 255, 0.06); padding: 0.5rem 0.75rem; text-align: left; }
+  th { background: rgba(51, 65, 85, 0.75); font-weight: 600; }
+  hr { border: none; border-top: 1px solid rgba(255, 255, 255, 0.06); margin: 2em 0; }
+`
+
+// 清理 HTML 内容，移除可能导致问题的元素
+function sanitizeEmailHtml(html: string): string {
+  return DOMPurify.sanitize(html, {
     USE_PROFILES: { html: true },
     ALLOWED_TAGS: [
-      'p',
-      'br',
-      'strong',
-      'em',
-      'u',
-      's',
-      'a',
-      'img',
-      'div',
-      'span',
-      'h1',
-      'h2',
-      'h3',
-      'h4',
-      'h5',
-      'h6',
-      'ul',
-      'ol',
-      'li',
-      'table',
-      'thead',
-      'tbody',
-      'tr',
-      'th',
-      'td',
-      'blockquote',
-      'pre',
-      'code',
-      'hr'
+      'p', 'br', 'strong', 'em', 'u', 's', 'a', 'img',
+      'div', 'span',
+      'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+      'ul', 'ol', 'li',
+      'table', 'thead', 'tbody', 'tr', 'th', 'td',
+      'blockquote', 'pre', 'code', 'hr'
     ],
-    ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'style', 'class', 'id', 'width', 'height']
+    // 禁止所有可能导致样式冲突的属性
+    FORBID_ATTR: ['style', 'class', 'id'],
+    ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'width', 'height', 'target'],
+    FORCE_BODY: true
   })
-})
+}
 
-function handleClick(e: MouseEvent) {
-  const target = e.target as HTMLElement
-  const anchor = target.closest('a')
-  if (anchor?.href) {
-    e.preventDefault()
-    e.stopPropagation()
-    pendingLinkUrl.value = anchor.href
-    showLinkDialog.value = true
+// 监听 iframe 内的链接点击
+function setupLinkClickListener(doc: Document) {
+  doc.addEventListener('click', (e: Event) => {
+    const target = e.target as HTMLElement
+    const anchor = target.closest('a')
+    if (anchor?.href) {
+      e.preventDefault()
+      e.stopPropagation()
+      pendingLinkUrl.value = anchor.href
+      showLinkDialog.value = true
+    }
+  })
+}
+
+// 向 iframe 写入内容
+function writeFrameContent() {
+  if (!htmlFrame.value || !props.html) return
+
+  const frame = htmlFrame.value
+  const doc = frame.contentDocument || frame.contentWindow?.document
+
+  if (doc) {
+    const sanitizedHtml = sanitizeEmailHtml(props.html)
+
+    doc.open()
+    doc.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="UTF-8">
+          <style>${emailStyles}</style>
+        </head>
+        <body>
+          ${sanitizedHtml}
+        </body>
+      </html>
+    `)
+    doc.close()
+
+    // 内容写入后设置链接点击监听
+    setupLinkClickListener(doc)
   }
 }
+
+// iframe 加载完成后写入内容
+function onFrameLoad() {
+  writeFrameContent()
+}
+
+// 监听 html prop 变化
+watch(() => props.html, async () => {
+  await nextTick()
+  if (htmlFrame.value && props.html) {
+    writeFrameContent()
+  }
+})
+
+// 组件挂载后，如果已经有 html 内容，等待 iframe 渲染后写入
+onMounted(async () => {
+  await nextTick()
+  if (htmlFrame.value && props.html) {
+    // iframe 的初始 load 事件会触发 onFrameLoad
+    // 如果 iframe 已经加载但内容还没写入，手动触发
+    const doc = htmlFrame.value.contentDocument
+    if (doc && doc.body && doc.body.innerHTML === '') {
+      writeFrameContent()
+    }
+  }
+})
 
 async function handleConfirmLink() {
   showLinkDialog.value = false
@@ -130,105 +222,24 @@ function handleCancelLink() {
 </script>
 
 <style scoped>
-.email-content {
-  color: var(--text-secondary);
-  font-size: 14px;
-  line-height: 1.7;
+.email-body-container {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
-.email-content :deep(p) {
-  margin: 0 0 1em 0;
-}
-
-.email-content :deep(p:last-child) {
-  margin-bottom: 0;
-}
-
-.email-content :deep(a) {
-  color: var(--accent);
-  text-decoration: none;
-}
-
-.email-content :deep(a:hover) {
-  text-decoration: underline;
-}
-
-.email-content :deep(img) {
-  max-width: 100%;
-  height: auto;
-  border-radius: 8px;
-  margin: 1em 0;
-}
-
-.email-content :deep(blockquote) {
-  border-left: 3px solid var(--border-primary);
-  padding-left: 1rem;
-  margin: 1em 0;
-  color: var(--text-muted);
-  font-style: italic;
-}
-
-.email-content :deep(pre) {
-  background: var(--bg-tertiary);
-  padding: 1rem;
-  border-radius: 8px;
-  overflow-x: auto;
-  margin: 1em 0;
-}
-
-.email-content :deep(code) {
-  font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
-  font-size: 0.9em;
-  background: var(--bg-tertiary);
-  padding: 0.2em 0.4em;
-  border-radius: 4px;
-}
-
-.email-content :deep(pre code) {
-  background: none;
-  padding: 0;
-}
-
-.email-content :deep(ul),
-.email-content :deep(ol) {
-  padding-left: 1.5rem;
-  margin: 1em 0;
-}
-
-.email-content :deep(li) {
-  margin: 0.25em 0;
-}
-
-.email-content :deep(h1),
-.email-content :deep(h2),
-.email-content :deep(h3),
-.email-content :deep(h4) {
-  color: var(--text-primary);
-  font-weight: 600;
-  margin: 1.5em 0 0.5em 0;
-}
-
-.email-content :deep(table) {
+.email-iframe {
   width: 100%;
-  border-collapse: collapse;
-  margin: 1em 0;
-}
-
-.email-content :deep(th),
-.email-content :deep(td) {
-  border: 1px solid var(--border-secondary);
-  padding: 0.5rem 0.75rem;
-  text-align: left;
-}
-
-.email-content :deep(th) {
-  background: var(--bg-tertiary);
-  font-weight: 600;
-}
-
-.email-content :deep(hr) {
+  flex: 1;
+  min-height: 200px;
   border: none;
-  border-top: 1px solid var(--border-secondary);
-  margin: 2em 0;
+  background: transparent;
+  display: block;
+}
+
+.email-text-content {
+  color: var(--text-secondary);
+  flex: 1;
+  overflow-y: auto;
 }
 </style>

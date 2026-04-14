@@ -1,11 +1,17 @@
 /**
- * 邮箱服务商 POP3 预设配置
+ * 邮箱服务商 POP3/IMAP 预设配置
  * 根据邮箱域名自动填充服务器配置
  */
 
 export type SecurityType = 'ssl' | 'none'
 
 export interface Pop3Preset {
+  host: string
+  port: number
+  security: SecurityType
+}
+
+export interface ImapPreset {
   host: string
   port: number
   security: SecurityType
@@ -20,6 +26,7 @@ export interface SmtpPreset {
 export interface EmailProviderPreset {
   name: string
   pop3: Pop3Preset
+  imap: ImapPreset
   smtp?: SmtpPreset
 }
 
@@ -30,36 +37,43 @@ export const PROVIDER_PRESETS: Record<string, EmailProviderPreset> = {
   'gmail.com': {
     name: 'Gmail',
     pop3: { host: 'pop.gmail.com', port: 995, security: 'ssl' },
+    imap: { host: 'imap.gmail.com', port: 993, security: 'ssl' },
     smtp: { host: 'smtp.gmail.com', port: 465, security: 'ssl' }
   },
   '163.com': {
     name: '163 Mail',
     pop3: { host: 'pop.163.com', port: 110, security: 'none' },
+    imap: { host: 'imap.163.com', port: 143, security: 'none' },
     smtp: { host: 'smtp.163.com', port: 25, security: 'none' }
   },
   '126.com': {
     name: '126 Mail',
     pop3: { host: 'pop.126.com', port: 110, security: 'none' },
+    imap: { host: 'imap.126.com', port: 143, security: 'none' },
     smtp: { host: 'smtp.126.com', port: 25, security: 'none' }
   },
   'qq.com': {
     name: 'QQ Mail',
     pop3: { host: 'pop.qq.com', port: 110, security: 'none' },
+    imap: { host: 'imap.qq.com', port: 143, security: 'none' },
     smtp: { host: 'smtp.qq.com', port: 465, security: 'ssl' }
   },
   'outlook.com': {
     name: 'Outlook',
     pop3: { host: 'pop-mail.outlook.com', port: 995, security: 'ssl' },
+    imap: { host: 'imap-mail.outlook.com', port: 993, security: 'ssl' },
     smtp: { host: 'smtp-mail.outlook.com', port: 587, security: 'ssl' }
   },
   'hotmail.com': {
     name: 'Hotmail',
     pop3: { host: 'pop-mail.outlook.com', port: 995, security: 'ssl' },
+    imap: { host: 'imap-mail.outlook.com', port: 993, security: 'ssl' },
     smtp: { host: 'smtp-mail.outlook.com', port: 587, security: 'ssl' }
   },
   'live.com': {
     name: 'Live',
     pop3: { host: 'pop-mail.outlook.com', port: 995, security: 'ssl' },
+    imap: { host: 'imap-mail.outlook.com', port: 993, security: 'ssl' },
     smtp: { host: 'smtp-mail.outlook.com', port: 587, security: 'ssl' }
   }
 }
@@ -86,6 +100,13 @@ export function getProviderPreset(email: string): EmailProviderPreset | null {
  */
 export function getDefaultPop3Port(security: SecurityType): number {
   return security === 'ssl' ? 995 : 110
+}
+
+/**
+ * 获取默认 IMAP 端口
+ */
+export function getDefaultImapPort(security: SecurityType): number {
+  return security === 'ssl' ? 993 : 143
 }
 
 /**

@@ -29,7 +29,7 @@
               email.isRead ? 'text-text-secondary' : 'font-semibold text-text-primary'
             ]"
           >
-            {{ email.fromName }}
+            {{ email.fromName || email.fromAddress || '未知发件人' }}
           </span>
           <span class="text-xs text-text-muted whitespace-nowrap shrink-0">
             {{ formatTime(email.date) }}
@@ -43,7 +43,7 @@
             email.isRead ? 'text-text-secondary' : 'text-text-primary'
           ]"
         >
-          {{ email.subject }}
+          {{ email.subject || '无主题' }}
         </div>
 
         <!-- 摘要 + 图标 -->
@@ -89,6 +89,11 @@ defineEmits<{
 const avatarLetter = computed(() => (props.email.fromName || props.email.fromAddress || '?').charAt(0).toUpperCase())
 
 function formatTime(timestamp: number): string {
+  // 处理无效的时间戳
+  if (!timestamp || timestamp <= 0) {
+    return '未知时间'
+  }
+
   // 时间戳是秒级的 Unix timestamp，需要乘以 1000 转为毫秒
   const date = new Date(timestamp * 1000)
   const now = new Date()

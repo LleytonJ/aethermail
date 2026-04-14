@@ -226,7 +226,7 @@
       <div class="flex gap-2">
         <button
           class="px-4 py-2 text-sm text-text-secondary hover:text-text-primary transition-colors"
-          @click="emit('close')"
+          @click="handleCancel"
         >
           取消
         </button>
@@ -489,6 +489,26 @@ function handleKeyDown(e: KeyboardEvent) {
     goNext()
   }
   if (e.key === 'Escape') {
+    handleCancel()
+  }
+}
+
+// 检查是否有已填写的内容
+const hasFormData = computed(() => {
+  return form.value.email.length > 0 ||
+         form.value.password.length > 0 ||
+         form.value.displayName.length > 0 ||
+         form.value.host.length > 0
+})
+
+// 处理取消操作
+function handleCancel() {
+  if (hasFormData.value && currentStep.value !== 'done') {
+    // 用户已填写内容，弹出确认提示
+    if (confirm('您已填写了一些内容，确定要取消吗？')) {
+      emit('close')
+    }
+  } else {
     emit('close')
   }
 }

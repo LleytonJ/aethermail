@@ -1,8 +1,9 @@
 <template>
   <Modal
     :is-open="isOpen"
-    :title="view === 'select' ? '添加账户' : '添加 POP3 账户'"
+    :title="view === 'select' ? '添加账户' : view === 'pop3' ? '添加 POP3 账户' : '添加 IMAP 账户'"
     :width="view === 'select' ? 'md' : 'lg'"
+    :close-on-backdrop="false"
     @close="handleClose"
   >
     <!-- Provider Selection View -->
@@ -12,6 +13,24 @@
       </p>
 
       <div class="space-y-3">
+        <!-- IMAP Option -->
+        <button
+          class="w-full flex items-center gap-4 p-4 rounded-lg border border-border-primary bg-bg-secondary hover:bg-bg-hover transition-colors text-left group"
+          @click="view = 'imap'"
+        >
+          <div class="flex-shrink-0 w-10 h-10 rounded-lg bg-accent/10 flex items-center justify-center">
+            <Inbox class="w-5 h-5 text-accent" />
+          </div>
+          <div class="flex-1 min-w-0">
+            <div class="text-sm font-medium text-text-primary group-hover:text-accent transition-colors">
+              IMAP
+            </div>
+            <div class="text-xs text-text-tertiary mt-0.5">
+              双向同步，保留服务器邮件，支持文件夹（推荐）
+            </div>
+          </div>
+        </button>
+
         <!-- POP3/SMTP Option -->
         <button
           class="w-full flex items-center gap-4 p-4 rounded-lg border border-border-primary bg-bg-secondary hover:bg-bg-hover transition-colors text-left group"
@@ -84,14 +103,23 @@
       @success="handleSuccess"
       @back="view = 'select'"
     />
+
+    <!-- IMAP Configuration View -->
+    <AddImapAccount
+      v-else-if="view === 'imap'"
+      @close="handleClose"
+      @success="handleSuccess"
+      @back="view = 'select'"
+    />
   </Modal>
 </template>
 
 <script setup lang="ts">
 import { ref } from 'vue'
-import { Mail } from 'lucide-vue-next'
+import { Mail, Inbox } from 'lucide-vue-next'
 import Modal from '@/components/ui/Modal.vue'
 import AddPop3Account from './AddPop3Account.vue'
+import AddImapAccount from './AddImapAccount.vue'
 
 interface Props {
   isOpen: boolean
@@ -104,7 +132,7 @@ const emit = defineEmits<{
   success: []
 }>()
 
-type View = 'select' | 'pop3'
+type View = 'select' | 'pop3' | 'imap'
 const view = ref<View>('select')
 
 function handleClose() {

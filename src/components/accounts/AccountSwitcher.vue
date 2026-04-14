@@ -64,8 +64,16 @@
               <div class="text-sm font-medium truncate leading-tight">
                 {{ account.name || account.email.split('@')[0] }}
               </div>
-              <div class="text-xs text-text-secondary truncate leading-tight">
-                {{ account.email }}
+              <div class="flex items-center gap-1.5">
+                <span class="text-xs text-text-secondary truncate leading-tight">
+                  {{ account.email }}
+                </span>
+                <span
+                  class="px-1 py-0.5 rounded text-[0.625rem] font-medium"
+                  :class="account.protocol === 'imap' ? 'bg-accent/10 text-accent' : 'bg-bg-tertiary text-text-tertiary'"
+                >
+                  {{ account.protocol?.toUpperCase() || 'POP3' }}
+                </span>
               </div>
             </div>
             <Check

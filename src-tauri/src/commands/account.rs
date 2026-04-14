@@ -6,6 +6,21 @@ use std::fs;
 use std::io::{Read, Write};
 
 use crate::pop3::{Pop3Client, Pop3Config, Pop3Credentials, ConnectionTestResult};
+use crate::imap::{ImapClient, ImapConfig, ImapCredentials};
+
+/// Protocol type for email account
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProtocolType {
+    Pop3,
+    Imap,
+}
+
+impl Default for ProtocolType {
+    fn default() -> Self {
+        ProtocolType::Pop3
+    }
+}
 
 /// Account configuration stored in JSON file
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,14 +29,28 @@ pub struct AccountConfig {
     pub email: String,
     pub display_name: Option<String>,
     pub password: String,
+    /// Protocol type (pop3 or imap)
+    #[serde(default)]
+    pub protocol: ProtocolType,
+    /// POP3 server configuration
     pub pop3_host: String,
     pub pop3_port: u16,
     pub use_ssl: bool,
+    /// IMAP server configuration
+    #[serde(default)]
+    pub imap_host: String,
+    #[serde(default = "default_imap_port")]
+    pub imap_port: u16,
+    #[serde(default = "default_imap_ssl")]
+    pub imap_use_ssl: bool,
     pub is_active: bool,
     /// 是否启用钓鱼邮件检测
     #[serde(default)]
     pub phishing_detection_enabled: bool,
 }
+
+fn default_imap_port() -> u16 { 993 }
+fn default_imap_ssl() -> bool { true }
 
 impl Default for AccountConfig {
     fn default() -> Self {
@@ -30,9 +59,13 @@ impl Default for AccountConfig {
             email: String::new(),
             display_name: None,
             password: String::new(),
+            protocol: ProtocolType::Pop3,
             pop3_host: String::new(),
             pop3_port: 995,
             use_ssl: true,
+            imap_host: String::new(),
+            imap_port: 993,
+            imap_use_ssl: true,
             is_active: false,
             phishing_detection_enabled: false,
         }
@@ -112,6 +145,25 @@ pub async fn test_pop3_connection(
     client.test_connection().await
 }
 
+/// Test IMAP connection
+#[tauri::command]
+pub async fn test_imap_connection(
+    host: String,
+    port: u16,
+    use_ssl: bool,
+    email: String,
+    password: String,
+) -> Result<ConnectionTestResult, String> {
+    let config = ImapConfig { host, port, use_ssl };
+    let credentials = ImapCredentials {
+        username: email,
+        password,
+    };
+
+    let client = ImapClient::new(config, credentials);
+    client.test_connection().await
+}
+
 /// Add a new POP3 account
 #[tauri::command]
 pub async fn add_pop3_account(
@@ -129,9 +181,60 @@ pub async fn add_pop3_account(
         email,
         display_name,
         password,
+        protocol: ProtocolType::Pop3,
         pop3_host: host,
         pop3_port: port,
         use_ssl,
+        imap_host: String::new(),
+        imap_port: 993,
+        imap_use_ssl: true,
+        is_active: true,
+        phishing_detection_enabled: false,
+    };
+
+    // Load existing accounts
+    let mut accounts_file = load_accounts_file()?;
+
+    // Deactivate other accounts if this one is active
+    if account.is_active {
+        for acc in &mut accounts_file.accounts {
+            acc.is_active = false;
+        }
+    }
+
+    // Add new account
+    accounts_file.accounts.push(account.clone());
+
+    // Save to file
+    save_accounts_file(&accounts_file)?;
+
+    Ok(account)
+}
+
+/// Add a new IMAP account
+#[tauri::command]
+pub async fn add_imap_account(
+    email: String,
+    password: String,
+    display_name: Option<String>,
+    imap_host: String,
+    imap_port: u16,
+    imap_use_ssl: bool,
+) -> Result<AccountConfig, String> {
+    let id = format!("account-{}", chrono::Utc::now().timestamp_millis());
+
+    let account = AccountConfig {
+        id: id.clone(),
+        email,
+        display_name,
+        password,
+        protocol: ProtocolType::Imap,
+        pop3_host: String::new(),
+        pop3_port: 995,
+        use_ssl: true,
+        imap_host,
+        imap_port,
+        imap_use_ssl,
         is_active: true,
         phishing_detection_enabled: false,
     };

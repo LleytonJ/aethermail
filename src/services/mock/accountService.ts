@@ -106,6 +106,7 @@ export async function addMockAccount(
     name: displayName || email.split('@')[0] || 'User',
     email,
     isActive: true,
+    protocol: 'pop3',
     provider: 'pop3',
     incomingServer: pop3Config.host,
     outgoingServer: '',
