@@ -204,3 +204,46 @@ export async function getPhishingCount(accountId: string): Promise<number> {
 export async function getPhishingUnreadCount(accountId: string): Promise<number> {
   return invoke<number>('get_phishing_unread_count', { accountId })
 }
+
+/**
+ * 发送邮件结果
+ */
+export interface SendEmailResult {
+  success: boolean
+  message: string
+}
+
+/**
+ * 发送邮件
+ */
+export async function sendEmail(
+  accountId: string,
+  toAddresses: string[],
+  ccAddresses: string[] | null,
+  subject: string,
+  body: string
+): Promise<SendEmailResult> {
+  console.log('[emailService] sendEmail - 开始发送', {
+    accountId,
+    toAddresses,
+    ccAddresses,
+    subject,
+    bodyLength: body.length
+  })
+
+  try {
+    const result = await invoke<SendEmailResult>('send_email', {
+      accountId,
+      toAddresses,
+      ccAddresses,
+      subject,
+      body
+    })
+
+    console.log('[emailService] sendEmail - 发送结果:', result)
+    return result
+  } catch (error) {
+    console.error('[emailService] sendEmail - 发送失败:', error)
+    throw error
+  }
+}

@@ -113,6 +113,9 @@ export async function addMockAccount(
     incomingPort: pop3Config.port,
     outgoingPort: 0,
     useSsl: pop3Config.security === 'ssl',
+    smtpHost: '',
+    smtpPort: 465,
+    smtpUseSsl: true,
     phishingDetectionEnabled: false
   }
 

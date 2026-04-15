@@ -3,6 +3,7 @@
     :is-open="isOpen"
     title="编辑账户"
     width="lg"
+    :close-on-backdrop="false"
     @close="emit('close')"
   >
     <EditAccountForm

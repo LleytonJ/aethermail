@@ -47,12 +47,14 @@
         <div v-else class="flex items-center gap-1">
           <button
             class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-bg-hover rounded-md transition-colors"
+            @click="handleReply"
           >
             <Reply :size="14" />
             回复
           </button>
           <button
             class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-bg-hover rounded-md transition-colors"
+            @click="handleForward"
           >
             <Forward :size="14" />
             转发
@@ -117,6 +119,7 @@
 import { computed } from 'vue'
 import { useMailboxStore } from '@/stores/mailbox'
 import { useNotificationStore } from '@/stores/notification'
+import { useComposeStore } from '@/stores/compose'
 import { Mail, Reply, Forward, Star, Archive, Trash2, ShieldAlert, Undo2 } from 'lucide-vue-next'
 import EmailHeader from '../email/EmailHeader.vue'
 import EmailBody from '../email/EmailBody.vue'
@@ -125,8 +128,30 @@ import { updatePhishingStatus } from '@/services/email/emailService'
 
 const store = useMailboxStore()
 const notificationStore = useNotificationStore()
+const composeStore = useComposeStore()
 
 const currentEmail = computed(() => store.selectedEmail)
+
+// 回复邮件
+function handleReply() {
+  if (!currentEmail.value) return
+
+  composeStore.openReply(
+    currentEmail.value.fromAddress || '',
+    currentEmail.value.subject || '',
+    currentEmail.value.bodyText || currentEmail.value.bodyHtml || ''
+  )
+}
+
+// 转发邮件
+function handleForward() {
+  if (!currentEmail.value) return
+
+  composeStore.openForward(
+    currentEmail.value.subject || '',
+    currentEmail.value.bodyText || currentEmail.value.bodyHtml || ''
+  )
+}
 
 // 将邮件移回收件箱
 async function handleMoveToInbox() {

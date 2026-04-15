@@ -16,6 +16,9 @@ export const MOCK_ACCOUNTS: Account[] = [
     incomingPort: 995,
     outgoingPort: 587,
     useSsl: true,
+    smtpHost: 'smtp.example.com',
+    smtpPort: 465,
+    smtpUseSsl: true,
     phishingDetectionEnabled: false
   },
   {
@@ -30,6 +33,9 @@ export const MOCK_ACCOUNTS: Account[] = [
     incomingPort: 995,
     outgoingPort: 465,
     useSsl: true,
+    smtpHost: 'smtp.gmail.com',
+    smtpPort: 465,
+    smtpUseSsl: true,
     phishingDetectionEnabled: false
   }
 ]

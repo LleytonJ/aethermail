@@ -92,7 +92,10 @@
 
       <!-- Step 2: IMAP Server -->
       <div v-else-if="currentStep === 'server'" class="space-y-4">
-        <div v-if="presetMatched" class="text-xs text-text-tertiary mb-2">
+        <div class="text-xs text-text-tertiary mb-3">
+          IMAP 用于接收邮件，邮件保留在服务器上，支持多设备同步。
+        </div>
+        <div v-if="presetMatched" class="text-xs text-text-tertiary">
           服务器设置已自动填充，您可以手动修改。
         </div>
 
@@ -138,14 +141,65 @@
         </div>
       </div>
 
-      <!-- Step 3: Test Connection -->
+      <!-- Step 3: SMTP Server -->
+      <div v-else-if="currentStep === 'smtp'" class="space-y-4">
+        <div class="text-xs text-text-tertiary mb-3">
+          SMTP 用于发送邮件，无论 POP3 还是 IMAP 收件协议都使用 SMTP 发件。
+        </div>
+        <div v-if="presetMatched" class="text-xs text-text-tertiary">
+          服务器设置已自动填充，您可以手动修改。
+        </div>
+
+        <div>
+          <label for="smtpHost" class="block text-xs font-medium text-text-secondary mb-1">
+            SMTP 服务器
+          </label>
+          <input
+            id="smtpHost"
+            v-model="form.smtpHost"
+            type="text"
+            placeholder="smtp.example.com"
+            class="w-full px-3 py-2 bg-bg-secondary border border-border-primary rounded-lg text-sm text-text-primary outline-none focus:border-accent transition-colors"
+          />
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label for="smtpPort" class="block text-xs font-medium text-text-secondary mb-1">
+              端口
+            </label>
+            <input
+              id="smtpPort"
+              v-model.number="form.smtpPort"
+              type="number"
+              class="w-full px-3 py-2 bg-bg-secondary border border-border-primary rounded-lg text-sm text-text-primary outline-none focus:border-accent transition-colors"
+            />
+          </div>
+          <div>
+            <label for="smtpSecurity" class="block text-xs font-medium text-text-secondary mb-1">
+              安全
+            </label>
+            <select
+              id="smtpSecurity"
+              v-model="form.smtpSecurity"
+              class="w-full px-3 py-2 bg-bg-secondary border border-border-primary rounded-lg text-sm text-text-primary outline-none focus:border-accent transition-colors appearance-none"
+              @change="handleSmtpSecurityChange"
+            >
+              <option value="ssl">SSL/TLS</option>
+              <option value="none">无</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4: Test Connection -->
       <div v-else-if="currentStep === 'test'" class="space-y-4">
         <div class="text-sm text-text-secondary mb-2">
           添加账户前请先测试连接设置。
         </div>
 
         <div class="space-y-3">
-          <!-- Test Result -->
+          <!-- IMAP Test Result -->
           <div class="flex items-start gap-3 p-3 rounded-lg bg-bg-secondary border border-border-primary">
             <div class="mt-0.5">
               <Loader2 v-if="testStatus.state === 'testing'" class="w-4 h-4 animate-spin text-accent" />
@@ -171,20 +225,44 @@
               </div>
             </div>
           </div>
+
+          <!-- SMTP Test Result -->
+          <div class="flex items-start gap-3 p-3 rounded-lg bg-bg-secondary border border-border-primary">
+            <div class="mt-0.5">
+              <Loader2 v-if="smtpTestStatus.state === 'testing'" class="w-4 h-4 animate-spin text-accent" />
+              <CheckCircle2 v-else-if="smtpTestStatus.state === 'success'" class="w-4 h-4 text-success" />
+              <XCircle v-else-if="smtpTestStatus.state === 'error'" class="w-4 h-4 text-danger" />
+              <div v-else class="w-4 h-4 rounded-full border-2 border-border-primary" />
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-medium text-text-primary">SMTP 连接</div>
+              <div
+                v-if="smtpTestStatus.message"
+                class="text-xs mt-0.5"
+                :class="{
+                  'text-danger': smtpTestStatus.state === 'error',
+                  'text-success': smtpTestStatus.state === 'success',
+                  'text-text-tertiary': smtpTestStatus.state === 'testing'
+                }"
+              >
+                {{ smtpTestStatus.message }}
+              </div>
+            </div>
+          </div>
         </div>
 
         <button
           class="w-full px-4 py-2 text-sm bg-bg-secondary border border-border-primary rounded-lg text-text-primary hover:bg-bg-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          :disabled="testStatus.state === 'testing'"
+          :disabled="testStatus.state === 'testing' || smtpTestStatus.state === 'testing'"
           @click="runTest"
         >
-          <span v-if="testStatus.state === 'testing'">测试中...</span>
-          <span v-else-if="testStatus.state === 'idle'">测试连接</span>
+          <span v-if="testStatus.state === 'testing' || smtpTestStatus.state === 'testing'">测试中...</span>
+          <span v-else-if="testStatus.state === 'idle' && smtpTestStatus.state === 'idle'">测试连接</span>
           <span v-else>重新测试</span>
         </button>
       </div>
 
-      <!-- Step 4: Success -->
+      <!-- Step 5: Success -->
       <div v-else-if="currentStep === 'done'" class="text-center py-6">
         <div class="w-16 h-16 mx-auto mb-4 rounded-full bg-success/10 flex items-center justify-center">
           <CheckCircle2 class="w-8 h-8 text-success" />
@@ -234,7 +312,7 @@
         <button
           v-if="currentStep === 'test'"
           class="px-4 py-2 text-sm bg-accent text-white rounded-lg hover:bg-accent-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          :disabled="testStatus.state !== 'success'"
+          :disabled="testStatus.state !== 'success' || smtpTestStatus.state !== 'success'"
           @click="handleSave"
         >
           添加账户
@@ -258,6 +336,7 @@ import { ref, computed, watch } from 'vue'
 import {
   Mail,
   Server,
+  Send,
   ShieldCheck,
   CheckCircle2,
   ArrowLeft,
@@ -271,12 +350,14 @@ import { useAccountStore } from '@/stores/account'
 import {
   getProviderPreset,
   getDefaultImapPort,
+  getDefaultSmtpPort,
   type SecurityType
 } from '@/services/email/providerPresets'
 import {
   testImapConnection,
+  testSmtpConnection,
   type ImapConfig,
-  type ConnectionTestResult
+  type SmtpConfig
 } from '@/services/email/accountService'
 import {
   parseConnectionError,
@@ -292,7 +373,7 @@ const emit = defineEmits<{
 const accountStore = useAccountStore()
 
 // Steps configuration
-type StepId = 'basic' | 'server' | 'test' | 'done'
+type StepId = 'basic' | 'server' | 'smtp' | 'test' | 'done'
 
 interface Step {
   id: StepId
@@ -302,7 +383,8 @@ interface Step {
 
 const steps: Step[] = [
   { id: 'basic', label: '账户', icon: Mail },
-  { id: 'server', label: '服务器', icon: Server },
+  { id: 'server', label: '收件', icon: Server },
+  { id: 'smtp', label: '发件', icon: Send },
   { id: 'test', label: '测试', icon: ShieldCheck },
   { id: 'done', label: '完成', icon: CheckCircle2 }
 ]
@@ -317,7 +399,10 @@ const form = ref({
   password: '',
   host: '',
   port: 993,
-  security: 'ssl' as SecurityType
+  security: 'ssl' as SecurityType,
+  smtpHost: '',
+  smtpPort: 465,
+  smtpSecurity: 'ssl' as SecurityType
 })
 
 // Validation errors
@@ -331,6 +416,14 @@ const testStatus = ref<{
   state: 'idle' | 'testing' | 'success' | 'error'
   message?: string
   serverInfo?: string
+}>({
+  state: 'idle'
+})
+
+// SMTP test status
+const smtpTestStatus = ref<{
+  state: 'idle' | 'testing' | 'success' | 'error'
+  message?: string
 }>({
   state: 'idle'
 })
@@ -349,6 +442,8 @@ const canGoNext = computed(() => {
       return form.value.email.includes('@') && form.value.password.length > 0
     case 'server':
       return form.value.host.length > 0 && form.value.port > 0
+    case 'smtp':
+      return form.value.smtpHost.length > 0 && form.value.smtpPort > 0
     default:
       return false
   }
@@ -382,6 +477,12 @@ watch(
         form.value.host = preset.imap.host
         form.value.port = preset.imap.port
         form.value.security = preset.imap.security
+        // 同时填充 SMTP 预设
+        if (preset.smtp) {
+          form.value.smtpHost = preset.smtp.host
+          form.value.smtpPort = preset.smtp.port
+          form.value.smtpSecurity = preset.smtp.security
+        }
         presetMatched.value = true
       } else {
         presetMatched.value = false
@@ -394,10 +495,16 @@ function handleSecurityChange() {
   form.value.port = getDefaultImapPort(form.value.security)
 }
 
+function handleSmtpSecurityChange() {
+  form.value.smtpPort = getDefaultSmtpPort(form.value.smtpSecurity)
+}
+
 async function runTest() {
   testStatus.value = { state: 'testing' }
+  smtpTestStatus.value = { state: 'testing' }
 
-  const config: ImapConfig = {
+  // 测试 IMAP 连接
+  const imapConfig: ImapConfig = {
     host: form.value.host,
     port: form.value.port,
     use_ssl: form.value.security === 'ssl',
@@ -405,9 +512,24 @@ async function runTest() {
     password: form.value.password
   }
 
-  try {
-    const result: ConnectionTestResult = await testImapConnection(config)
+  // 测试 SMTP 连接
+  const smtpConfig: SmtpConfig = {
+    host: form.value.smtpHost,
+    port: form.value.smtpPort,
+    use_ssl: form.value.smtpSecurity === 'ssl',
+    username: form.value.email,
+    password: form.value.password
+  }
 
+  // 并行测试两个连接
+  const [imapResult, smtpResult] = await Promise.allSettled([
+    testImapConnection(imapConfig),
+    testSmtpConnection(smtpConfig)
+  ])
+
+  // 处理 IMAP 结果
+  if (imapResult.status === 'fulfilled') {
+    const result = imapResult.value
     if (result.success) {
       testStatus.value = {
         state: 'success',
@@ -421,19 +543,39 @@ async function runTest() {
         message: parsed.title + (parsed.message ? ': ' + parsed.message : '')
       }
     }
-  } catch (e) {
-    const errorMsg = e instanceof Error ? e.message : String(e)
+  } else {
+    const errorMsg = imapResult.reason instanceof Error ? imapResult.reason.message : String(imapResult.reason)
     let parsed: { title: string; message: string }
-
     if (errorMsg.includes('认证') || errorMsg.includes('LOGIN')) {
-      parsed = parseAuthError(e)
+      parsed = parseAuthError(imapResult.reason)
     } else {
-      parsed = parseConnectionError(e)
+      parsed = parseConnectionError(imapResult.reason)
     }
-
     testStatus.value = {
       state: 'error',
       message: parsed.title + (parsed.message ? ': ' + parsed.message : '')
+    }
+  }
+
+  // 处理 SMTP 结果
+  if (smtpResult.status === 'fulfilled') {
+    const result = smtpResult.value
+    if (result.success) {
+      smtpTestStatus.value = {
+        state: 'success',
+        message: result.message
+      }
+    } else {
+      smtpTestStatus.value = {
+        state: 'error',
+        message: result.message
+      }
+    }
+  } else {
+    const errorMsg = smtpResult.reason instanceof Error ? smtpResult.reason.message : String(smtpResult.reason)
+    smtpTestStatus.value = {
+      state: 'error',
+      message: errorMsg
     }
   }
 }
@@ -447,7 +589,10 @@ async function handleSave() {
       form.value.password,
       form.value.host,
       form.value.port,
-      form.value.security === 'ssl'
+      form.value.security === 'ssl',
+      form.value.smtpHost,
+      form.value.smtpPort,
+      form.value.smtpSecurity === 'ssl'
     )
 
     // Move to done step
@@ -523,9 +668,13 @@ function handleAddAnother() {
     password: '',
     host: '',
     port: 993,
-    security: 'ssl'
+    security: 'ssl',
+    smtpHost: '',
+    smtpPort: 465,
+    smtpSecurity: 'ssl'
   }
   testStatus.value = { state: 'idle' }
+  smtpTestStatus.value = { state: 'idle' }
   presetMatched.value = false
   currentStep.value = 'basic'
 }

@@ -29,6 +29,16 @@
         />
       </div>
 
+      <!-- Protocol Type (read-only) -->
+      <div>
+        <label class="block text-xs font-medium text-text-secondary mb-1">
+          收件协议
+        </label>
+        <div class="px-3 py-2 bg-bg-tertiary border border-border-primary rounded-lg text-sm text-text-tertiary">
+          {{ form.protocol === 'imap' ? 'IMAP' : 'POP3' }}
+        </div>
+      </div>
+
       <!-- Password -->
       <div>
         <label for="password" class="block text-xs font-medium text-text-secondary mb-1">
@@ -59,45 +69,94 @@
       <!-- Divider -->
       <div class="border-t border-border-primary my-4" />
 
-      <!-- Server Settings -->
+      <!-- Incoming Server Settings -->
       <div class="text-xs font-medium text-text-secondary mb-3">
-        POP3 服务器设置
+        {{ form.protocol === 'imap' ? 'IMAP' : 'POP3' }} 收件服务器
       </div>
 
       <div>
-        <label for="host" class="block text-xs font-medium text-text-secondary mb-1">
+        <label for="incomingHost" class="block text-xs font-medium text-text-secondary mb-1">
           服务器地址
         </label>
         <input
-          id="host"
-          v-model="form.host"
+          id="incomingHost"
+          v-model="form.incomingHost"
           type="text"
-          placeholder="pop.example.com"
+          :placeholder="form.protocol === 'imap' ? 'imap.example.com' : 'pop.example.com'"
           class="w-full px-3 py-2 bg-bg-secondary border border-border-primary rounded-lg text-sm text-text-primary outline-none focus:border-accent transition-colors"
         />
       </div>
 
       <div class="grid grid-cols-2 gap-3">
         <div>
-          <label for="port" class="block text-xs font-medium text-text-secondary mb-1">
+          <label for="incomingPort" class="block text-xs font-medium text-text-secondary mb-1">
             端口
           </label>
           <input
-            id="port"
-            v-model.number="form.port"
+            id="incomingPort"
+            v-model.number="form.incomingPort"
             type="number"
             class="w-full px-3 py-2 bg-bg-secondary border border-border-primary rounded-lg text-sm text-text-primary outline-none focus:border-accent transition-colors"
           />
         </div>
         <div>
-          <label for="security" class="block text-xs font-medium text-text-secondary mb-1">
+          <label for="incomingSecurity" class="block text-xs font-medium text-text-secondary mb-1">
             安全
           </label>
           <select
-            id="security"
-            v-model="form.security"
+            id="incomingSecurity"
+            v-model="form.incomingSecurity"
             class="w-full px-3 py-2 bg-bg-secondary border border-border-primary rounded-lg text-sm text-text-primary outline-none focus:border-accent transition-colors appearance-none"
-            @change="handleSecurityChange"
+            @change="handleIncomingSecurityChange"
+          >
+            <option value="ssl">SSL/TLS</option>
+            <option value="none">无</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Divider -->
+      <div class="border-t border-border-primary my-4" />
+
+      <!-- SMTP Server Settings -->
+      <div class="text-xs font-medium text-text-secondary mb-3">
+        SMTP 发件服务器
+      </div>
+
+      <div>
+        <label for="smtpHost" class="block text-xs font-medium text-text-secondary mb-1">
+          服务器地址
+        </label>
+        <input
+          id="smtpHost"
+          v-model="form.smtpHost"
+          type="text"
+          placeholder="smtp.example.com"
+          class="w-full px-3 py-2 bg-bg-secondary border border-border-primary rounded-lg text-sm text-text-primary outline-none focus:border-accent transition-colors"
+        />
+      </div>
+
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label for="smtpPort" class="block text-xs font-medium text-text-secondary mb-1">
+            端口
+          </label>
+          <input
+            id="smtpPort"
+            v-model.number="form.smtpPort"
+            type="number"
+            class="w-full px-3 py-2 bg-bg-secondary border border-border-primary rounded-lg text-sm text-text-primary outline-none focus:border-accent transition-colors"
+          />
+        </div>
+        <div>
+          <label for="smtpSecurity" class="block text-xs font-medium text-text-secondary mb-1">
+            安全
+          </label>
+          <select
+            id="smtpSecurity"
+            v-model="form.smtpSecurity"
+            class="w-full px-3 py-2 bg-bg-secondary border border-border-primary rounded-lg text-sm text-text-primary outline-none focus:border-accent transition-colors appearance-none"
+            @change="handleSmtpSecurityChange"
           >
             <option value="ssl">SSL/TLS</option>
             <option value="none">无</option>
@@ -171,9 +230,9 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { Eye, EyeOff, AlertCircle } from 'lucide-vue-next'
-import { useAccountStore, type Account } from '@/stores/account'
-import { getDefaultPop3Port, type SecurityType } from '@/services/email/providerPresets'
-import { updatePhishingDetection } from '@/services/email/accountService'
+import { useAccountStore, type Account, type ProtocolType } from '@/stores/account'
+import { getDefaultPop3Port, getDefaultImapPort, getDefaultSmtpPort, type SecurityType } from '@/services/email/providerPresets'
+import { updatePhishingDetection, updateAccount as updateAccountService } from '@/services/email/accountService'
 import { isAiAvailable } from '@/services/ai/aiConfig'
 
 interface Props {
@@ -196,9 +255,13 @@ const form = ref({
   displayName: '',
   email: '',
   password: '',
-  host: '',
-  port: 110,
-  security: 'none' as SecurityType,
+  protocol: 'pop3' as ProtocolType,
+  incomingHost: '',
+  incomingPort: 110,
+  incomingSecurity: 'none' as SecurityType,
+  smtpHost: '',
+  smtpPort: 25,
+  smtpSecurity: 'none' as SecurityType,
   phishingDetectionEnabled: false
 })
 
@@ -206,9 +269,13 @@ onMounted(async () => {
   if (props.account) {
     form.value.displayName = props.account.name || ''
     form.value.email = props.account.email
-    form.value.host = props.account.incomingServer
-    form.value.port = props.account.incomingPort
-    form.value.security = props.account.useSsl ? 'ssl' : 'none'
+    form.value.protocol = props.account.protocol
+    form.value.incomingHost = props.account.incomingServer
+    form.value.incomingPort = props.account.incomingPort
+    form.value.incomingSecurity = props.account.useSsl ? 'ssl' : 'none'
+    form.value.smtpHost = props.account.smtpHost || ''
+    form.value.smtpPort = props.account.smtpPort || (props.account.protocol === 'imap' ? 465 : 25)
+    form.value.smtpSecurity = props.account.smtpUseSsl ? 'ssl' : 'none'
     form.value.phishingDetectionEnabled = props.account.phishingDetectionEnabled || false
   }
 
@@ -220,8 +287,16 @@ onMounted(async () => {
   }
 })
 
-function handleSecurityChange() {
-  form.value.port = getDefaultPop3Port(form.value.security)
+function handleIncomingSecurityChange() {
+  if (form.value.protocol === 'imap') {
+    form.value.incomingPort = getDefaultImapPort(form.value.incomingSecurity)
+  } else {
+    form.value.incomingPort = getDefaultPop3Port(form.value.incomingSecurity)
+  }
+}
+
+function handleSmtpSecurityChange() {
+  form.value.smtpPort = getDefaultSmtpPort(form.value.smtpSecurity)
 }
 
 async function handleSave() {
@@ -230,27 +305,44 @@ async function handleSave() {
   // Get password - use existing if not changed
   const password = form.value.password || ''
 
-  // Update account settings
-  await accountStore.updateAccount(
-    props.account.id,
-    form.value.displayName,
-    password,
-    form.value.host,
-    form.value.port,
-    form.value.security === 'ssl'
-  )
+  // Update account settings via backend
+  try {
+    await updateAccountService(
+      props.account.id,
+      form.value.displayName,
+      password,
+      form.value.incomingHost,
+      form.value.incomingPort,
+      form.value.incomingSecurity === 'ssl',
+      form.value.smtpHost,
+      form.value.smtpPort,
+      form.value.smtpSecurity === 'ssl'
+    )
 
-  // Update phishing detection setting
-  if (form.value.phishingDetectionEnabled !== props.account.phishingDetectionEnabled) {
-    const updated = await updatePhishingDetection(props.account.id, form.value.phishingDetectionEnabled)
-    // 更新本地 store 中的钓鱼检测开关状态
+    // Update local store
     const account = accountStore.accounts.find(a => a.id === props.account!.id)
     if (account) {
-      account.phishingDetectionEnabled = updated.phishingDetectionEnabled
+      account.name = form.value.displayName
+      account.incomingServer = form.value.incomingHost
+      account.incomingPort = form.value.incomingPort
+      account.useSsl = form.value.incomingSecurity === 'ssl'
+      account.smtpHost = form.value.smtpHost
+      account.smtpPort = form.value.smtpPort
+      account.smtpUseSsl = form.value.smtpSecurity === 'ssl'
     }
-  }
 
-  emit('saved')
+    // Update phishing detection setting
+    if (form.value.phishingDetectionEnabled !== props.account.phishingDetectionEnabled) {
+      const updated = await updatePhishingDetection(props.account.id, form.value.phishingDetectionEnabled)
+      if (account) {
+        account.phishingDetectionEnabled = updated.phishingDetectionEnabled
+      }
+    }
+
+    emit('saved')
+  } catch (e) {
+    console.error('Failed to update account:', e)
+  }
 }
 
 function handleKeyDown(e: KeyboardEvent) {

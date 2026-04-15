@@ -37,6 +37,10 @@ native-tls = "0.2"
 # IMAP email client
 async-imap = "0.11"
 futures = "0.3"
+
+# SMTP email client
+lettre = { version = "0.11", features = ["tokio1-native-tls"] }
+
 dirs = "5"
 chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }

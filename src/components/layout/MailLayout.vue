@@ -29,9 +29,16 @@
         <EmailList />
       </div>
 
-      <!-- 右侧阅读面板 -->
+      <!-- 右侧阅读面板或撰写界面 -->
       <main class="flex-1 overflow-hidden glass-panel">
-        <ReadingPane />
+        <ComposeEmail
+          v-if="composeStore.isOpen"
+          :reply-to="composeStore.state.replyTo"
+          :forward="composeStore.state.forward"
+          @close="composeStore.close()"
+          @sent="handleEmailSent"
+        />
+        <ReadingPane v-else />
       </main>
     </div>
 
@@ -53,10 +60,12 @@ import { useUiStore } from '@/stores/ui'
 import { useAccountStore } from '@/stores/account'
 import { useMailboxStore } from '@/stores/mailbox'
 import { useNotificationStore } from '@/stores/notification'
+import { useComposeStore } from '@/stores/compose'
 import TitleBar from './TitleBar.vue'
 import Sidebar from './Sidebar.vue'
 import EmailList from './EmailList.vue'
 import ReadingPane from './ReadingPane.vue'
+import ComposeEmail from '@/components/email/ComposeEmail.vue'
 import AddAccount from '@/components/accounts/AddAccount.vue'
 import Notifications from '@/components/common/Notifications.vue'
 
@@ -64,6 +73,7 @@ const uiStore = useUiStore()
 const accountStore = useAccountStore()
 const mailboxStore = useMailboxStore()
 const notificationStore = useNotificationStore()
+const composeStore = useComposeStore()
 
 const showAddAccount = ref(false)
 
@@ -115,5 +125,10 @@ async function handleAccountAdded() {
       trySync(account.id)
     }
   }
+}
+
+function handleEmailSent() {
+  // 邮件发送成功后，可以选择刷新邮件列表或关闭撰写界面
+  composeStore.close()
 }
 </script>

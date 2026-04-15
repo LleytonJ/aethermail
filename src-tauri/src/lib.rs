@@ -2,6 +2,7 @@
 
 mod pop3;
 mod imap;
+mod smtp;
 mod storage;
 mod commands;
 
@@ -35,6 +36,7 @@ pub fn run() {
             // Account commands
             commands::test_pop3_connection,
             commands::test_imap_connection,
+            commands::test_smtp_connection,
             commands::add_pop3_account,
             commands::add_imap_account,
             commands::get_accounts,
@@ -60,6 +62,7 @@ pub fn run() {
             commands::toggle_email_star,
             commands::delete_account_emails,
             commands::get_unread_count,
+            commands::send_email,
             // Phishing commands
             commands::update_phishing_status,
             commands::get_phishing_emails,

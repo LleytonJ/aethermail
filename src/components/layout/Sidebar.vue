@@ -12,6 +12,7 @@
     <div class="px-2 py-1.5 flex gap-1">
       <button
         class="flex-1 flex items-center justify-center gap-2 h-9 bg-accent hover:bg-accent-hover text-white rounded-lg text-sm font-medium interactive-btn"
+        @click="composeStore.openNewEmail()"
       >
         <Plus :size="16" />
         <span v-if="!uiStore.sidebarCollapsed">撰写</span>
@@ -83,6 +84,7 @@ import { useUiStore } from '@/stores/ui'
 import { useMailboxStore } from '@/stores/mailbox'
 import { useAccountStore } from '@/stores/account'
 import { useNotificationStore } from '@/stores/notification'
+import { useComposeStore } from '@/stores/compose'
 import {
   Inbox,
   Plus,
@@ -107,6 +109,7 @@ const uiStore = useUiStore()
 const mailboxStore = useMailboxStore()
 const accountStore = useAccountStore()
 const notificationStore = useNotificationStore()
+const composeStore = useComposeStore()
 
 // 钓鱼邮件未读数量
 const phishingUnreadCount = ref(0)

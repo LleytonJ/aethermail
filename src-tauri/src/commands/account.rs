@@ -7,6 +7,7 @@ use std::io::{Read, Write};
 
 use crate::pop3::{Pop3Client, Pop3Config, Pop3Credentials, ConnectionTestResult};
 use crate::imap::{ImapClient, ImapConfig, ImapCredentials};
+use crate::smtp::{SmtpClient, SmtpConfig, SmtpCredentials, SmtpTestResult};
 
 /// Protocol type for email account
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -43,6 +44,13 @@ pub struct AccountConfig {
     pub imap_port: u16,
     #[serde(default = "default_imap_ssl")]
     pub imap_use_ssl: bool,
+    /// SMTP server configuration
+    #[serde(default)]
+    pub smtp_host: String,
+    #[serde(default = "default_smtp_port")]
+    pub smtp_port: u16,
+    #[serde(default = "default_smtp_ssl")]
+    pub smtp_use_ssl: bool,
     pub is_active: bool,
     /// 是否启用钓鱼邮件检测
     #[serde(default)]
@@ -51,6 +59,8 @@ pub struct AccountConfig {
 
 fn default_imap_port() -> u16 { 993 }
 fn default_imap_ssl() -> bool { true }
+fn default_smtp_port() -> u16 { 465 }
+fn default_smtp_ssl() -> bool { true }
 
 impl Default for AccountConfig {
     fn default() -> Self {
@@ -66,6 +76,9 @@ impl Default for AccountConfig {
             imap_host: String::new(),
             imap_port: 993,
             imap_use_ssl: true,
+            smtp_host: String::new(),
+            smtp_port: 465,
+            smtp_use_ssl: true,
             is_active: false,
             phishing_detection_enabled: false,
         }
@@ -164,6 +177,25 @@ pub async fn test_imap_connection(
     client.test_connection().await
 }
 
+/// Test SMTP connection
+#[tauri::command]
+pub async fn test_smtp_connection(
+    host: String,
+    port: u16,
+    use_ssl: bool,
+    email: String,
+    password: String,
+) -> Result<SmtpTestResult, String> {
+    let config = SmtpConfig { host, port, use_ssl };
+    let credentials = SmtpCredentials {
+        username: email,
+        password,
+    };
+
+    let client = SmtpClient::new(config, credentials);
+    Ok(client.test_connection().await)
+}
+
 /// Add a new POP3 account
 #[tauri::command]
 pub async fn add_pop3_account(
@@ -173,6 +205,9 @@ pub async fn add_pop3_account(
     host: String,
     port: u16,
     use_ssl: bool,
+    smtp_host: String,
+    smtp_port: u16,
+    smtp_use_ssl: bool,
 ) -> Result<AccountConfig, String> {
     let id = format!("account-{}", chrono::Utc::now().timestamp_millis());
 
@@ -188,6 +223,9 @@ pub async fn add_pop3_account(
         imap_host: String::new(),
         imap_port: 993,
         imap_use_ssl: true,
+        smtp_host,
+        smtp_port,
+        smtp_use_ssl,
         is_active: true,
         phishing_detection_enabled: false,
     };
@@ -220,6 +258,9 @@ pub async fn add_imap_account(
     imap_host: String,
     imap_port: u16,
     imap_use_ssl: bool,
+    smtp_host: String,
+    smtp_port: u16,
+    smtp_use_ssl: bool,
 ) -> Result<AccountConfig, String> {
     let id = format!("account-{}", chrono::Utc::now().timestamp_millis());
 
@@ -235,6 +276,9 @@ pub async fn add_imap_account(
         imap_host,
         imap_port,
         imap_use_ssl,
+        smtp_host,
+        smtp_port,
+        smtp_use_ssl,
         is_active: true,
         phishing_detection_enabled: false,
     };
@@ -289,12 +333,14 @@ pub fn set_active_account(id: String) -> Result<(), String> {
 #[tauri::command]
 pub fn update_account(
     id: String,
-    email: Option<String>,
     display_name: Option<String>,
     password: Option<String>,
     host: Option<String>,
     port: Option<u16>,
     use_ssl: Option<bool>,
+    smtp_host: Option<String>,
+    smtp_port: Option<u16>,
+    smtp_use_ssl: Option<bool>,
 ) -> Result<AccountConfig, String> {
     let mut accounts_file = load_accounts_file()?;
 
@@ -304,23 +350,45 @@ pub fn update_account(
         .find(|a| a.id == id)
         .ok_or_else(|| "账户不存在".to_string())?;
 
-    if let Some(e) = email {
-        account.email = e;
-    }
     if let Some(d) = display_name {
         account.display_name = Some(d);
     }
     if let Some(p) = password {
-        account.password = p;
+        // Only update password if not empty
+        if !p.is_empty() {
+            account.password = p;
+        }
     }
+
+    // Update incoming server based on protocol type
     if let Some(h) = host {
-        account.pop3_host = h;
+        match account.protocol {
+            ProtocolType::Pop3 => account.pop3_host = h,
+            ProtocolType::Imap => account.imap_host = h,
+        }
     }
     if let Some(p) = port {
-        account.pop3_port = p;
+        match account.protocol {
+            ProtocolType::Pop3 => account.pop3_port = p,
+            ProtocolType::Imap => account.imap_port = p,
+        }
     }
     if let Some(s) = use_ssl {
-        account.use_ssl = s;
+        match account.protocol {
+            ProtocolType::Pop3 => account.use_ssl = s,
+            ProtocolType::Imap => account.imap_use_ssl = s,
+        }
+    }
+
+    // Update SMTP settings
+    if let Some(h) = smtp_host {
+        account.smtp_host = h;
+    }
+    if let Some(p) = smtp_port {
+        account.smtp_port = p;
+    }
+    if let Some(s) = smtp_use_ssl {
+        account.smtp_use_ssl = s;
     }
 
     let updated = account.clone();

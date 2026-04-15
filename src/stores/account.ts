@@ -10,15 +10,18 @@ import {
   deleteAccount as deleteServiceAccount,
   testConnection,
   testImapConnection,
+  testSmtpConnection,
   testConnectionByProtocol,
   type Pop3Config,
   type ImapConfig,
+  type SmtpConfig,
   type ConnectionTestResult,
+  type SmtpTestResult,
   type Account,
   type ProtocolType
 } from '@/services/email/accountService'
 
-export type { Account, ProtocolType } from '@/services/email/accountService'
+export type { Account, ProtocolType, SmtpConfig, SmtpTestResult } from '@/services/email/accountService'
 
 export const useAccountStore = defineStore('account', () => {
   // State
@@ -64,7 +67,10 @@ export const useAccountStore = defineStore('account', () => {
     password: string,
     pop3Host: string,
     pop3Port: number,
-    useSsl: boolean
+    useSsl: boolean,
+    smtpHost: string,
+    smtpPort: number,
+    smtpUseSsl: boolean
   ) {
     console.log('[accountStore] addAccount - 开始')
     console.log('[accountStore] addAccount - 参数:', {
@@ -73,7 +79,10 @@ export const useAccountStore = defineStore('account', () => {
       password: '***',
       pop3Host,
       pop3Port,
-      useSsl
+      useSsl,
+      smtpHost,
+      smtpPort,
+      smtpUseSsl
     })
 
     loading.value = true
@@ -86,7 +95,10 @@ export const useAccountStore = defineStore('account', () => {
         password,
         pop3Host,
         pop3Port,
-        useSsl
+        useSsl,
+        smtpHost,
+        smtpPort,
+        smtpUseSsl
       )
 
       console.log('[accountStore] addAccount - 成功:', newAccount)
@@ -118,7 +130,10 @@ export const useAccountStore = defineStore('account', () => {
     password: string,
     imapHost: string,
     imapPort: number,
-    imapUseSsl: boolean
+    imapUseSsl: boolean,
+    smtpHost: string,
+    smtpPort: number,
+    smtpUseSsl: boolean
   ) {
     console.log('[accountStore] addImapAccount - 开始')
     console.log('[accountStore] addImapAccount - 参数:', {
@@ -127,7 +142,10 @@ export const useAccountStore = defineStore('account', () => {
       password: '***',
       imapHost,
       imapPort,
-      imapUseSsl
+      imapUseSsl,
+      smtpHost,
+      smtpPort,
+      smtpUseSsl
     })
 
     loading.value = true
@@ -139,7 +157,10 @@ export const useAccountStore = defineStore('account', () => {
         password,
         imapHost,
         imapPort,
-        imapUseSsl
+        imapUseSsl,
+        smtpHost,
+        smtpPort,
+        smtpUseSsl
       )
 
       console.log('[accountStore] addImapAccount - 成功:', newAccount)
@@ -190,9 +211,12 @@ export const useAccountStore = defineStore('account', () => {
     id: string,
     displayName: string,
     password: string,
-    pop3Host: string,
-    pop3Port: number,
-    useSsl: boolean
+    incomingHost: string,
+    incomingPort: number,
+    useSsl: boolean,
+    smtpHost: string,
+    smtpPort: number,
+    smtpUseSsl: boolean
   ) {
     loading.value = true
     error.value = null
@@ -201,9 +225,12 @@ export const useAccountStore = defineStore('account', () => {
         id,
         displayName,
         password,
-        pop3Host,
-        pop3Port,
-        useSsl
+        incomingHost,
+        incomingPort,
+        useSsl,
+        smtpHost,
+        smtpPort,
+        smtpUseSsl
       )
 
       const account = accounts.value.find(a => a.id === id)
@@ -262,6 +289,11 @@ export const useAccountStore = defineStore('account', () => {
     return testImapConnection(config)
   }
 
+  // 测试 SMTP 连接
+  async function testSmtpConn(config: SmtpConfig): Promise<SmtpTestResult> {
+    return testSmtpConnection(config)
+  }
+
   // 根据协议测试连接（通用接口）
   async function testConnByProtocol(
     protocol: ProtocolType,
@@ -287,6 +319,7 @@ export const useAccountStore = defineStore('account', () => {
     init,
     testPop3Connection,
     testImapConn,
+    testSmtpConn,
     testConnByProtocol
   }
 })

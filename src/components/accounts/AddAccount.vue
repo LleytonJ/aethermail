@@ -23,10 +23,10 @@
           </div>
           <div class="flex-1 min-w-0">
             <div class="text-sm font-medium text-text-primary group-hover:text-accent transition-colors">
-              IMAP
+              IMAP + SMTP
             </div>
             <div class="text-xs text-text-tertiary mt-0.5">
-              双向同步，保留服务器邮件，支持文件夹（推荐）
+              双向同步，邮件保留在服务器，支持文件夹（推荐）
             </div>
           </div>
         </button>
@@ -41,10 +41,10 @@
           </div>
           <div class="flex-1 min-w-0">
             <div class="text-sm font-medium text-text-primary group-hover:text-accent transition-colors">
-              POP3 / SMTP
+              POP3 + SMTP
             </div>
             <div class="text-xs text-text-tertiary mt-0.5">
-              手动配置服务器，支持任意邮箱服务商
+              邮件下载到本地，支持任意邮箱服务商
             </div>
           </div>
         </button>

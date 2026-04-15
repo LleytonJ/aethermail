@@ -5,7 +5,7 @@
       v-if="html"
       ref="htmlFrame"
       class="email-iframe"
-      sandbox="allow-same-origin"
+      sandbox="allow-same-origin allow-scripts"
       @load="onFrameLoad"
     ></iframe>
 
@@ -128,9 +128,11 @@ function sanitizeEmailHtml(html: string): string {
       'table', 'thead', 'tbody', 'tr', 'th', 'td',
       'blockquote', 'pre', 'code', 'hr'
     ],
-    // 禁止所有可能导致样式冲突的属性
-    FORBID_ATTR: ['style', 'class', 'id'],
+    // 禁止所有可能导致样式冲突或安全问题的属性
+    FORBID_ATTR: ['style', 'class', 'id', 'onclick', 'onerror', 'onload', 'onmouseover'],
     ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'width', 'height', 'target'],
+    // 禁止脚本相关标签
+    FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'button'],
     FORCE_BODY: true
   })
 }

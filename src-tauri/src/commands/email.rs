@@ -8,8 +8,9 @@ use tokio::sync::RwLock;
 
 use crate::pop3::{Pop3Client, Pop3Config, Pop3Credentials, ParsedEmail, EmailAttachment};
 use crate::imap::{ImapClient, ImapConfig, ImapCredentials};
+use crate::smtp::{SmtpClient, SmtpConfig, SmtpCredentials, EmailMessage, SendEmailResult};
 use crate::storage::{Database, DbEmail, DbAttachment};
-use crate::commands::account::{get_accounts, ProtocolType};
+use crate::commands::account::{get_accounts, ProtocolType, AccountConfig};
 
 /// Global database instance
 static DB: std::sync::OnceLock<Arc<RwLock<Option<Database>>>> = std::sync::OnceLock::new();
@@ -612,4 +613,52 @@ pub async fn get_phishing_count(account_id: String) -> Result<i32, String> {
 pub async fn get_phishing_unread_count(account_id: String) -> Result<i32, String> {
     let db = get_db().await?;
     db.get_phishing_unread_count(&account_id).await
+}
+
+/// Send an email
+#[tauri::command]
+pub async fn send_email(
+    account_id: String,
+    to_addresses: Vec<String>,
+    cc_addresses: Option<Vec<String>>,
+    subject: String,
+    body: String,
+) -> Result<SendEmailResult, String> {
+    // Get account configuration
+    let accounts = get_accounts()?;
+    let account = accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .ok_or_else(|| "账户不存在".to_string())?;
+
+    // Check SMTP configuration
+    if account.smtp_host.is_empty() {
+        return Err("账户未配置 SMTP 服务器".to_string());
+    }
+
+    // Create SMTP client
+    let config = SmtpConfig {
+        host: account.smtp_host.clone(),
+        port: account.smtp_port,
+        use_ssl: account.smtp_use_ssl,
+    };
+    let credentials = SmtpCredentials {
+        username: account.email.clone(),
+        password: account.password.clone(),
+    };
+
+    let client = SmtpClient::new(config, credentials);
+
+    // Create email message
+    let email = EmailMessage {
+        from_address: account.email.clone(),
+        from_name: account.display_name.clone(),
+        to_addresses,
+        cc_addresses,
+        subject,
+        body,
+    };
+
+    // Send email
+    Ok(client.send_email(email).await)
 }
