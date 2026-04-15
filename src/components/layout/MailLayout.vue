@@ -1,12 +1,7 @@
 <template>
   <div class="flex flex-col h-screen overflow-hidden text-text-primary">
-    <!-- 动态背景 -->
-    <div class="animated-bg" aria-hidden="true">
-      <div class="blob" />
-      <div class="blob" />
-      <div class="blob" />
-      <div class="blob" />
-    </div>
+    <!-- 静态背景 -->
+    <div class="static-bg" aria-hidden="true" />
 
     <!-- 标题栏 -->
     <TitleBar />

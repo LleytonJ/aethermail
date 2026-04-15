@@ -7,13 +7,11 @@ import {
   markAsRead as markAsReadService,
   toggleStar as toggleStarService,
   getUnreadCount,
-  updatePhishingStatus,
   type SyncResult
 } from '@/services/email/emailService'
 import { useNotificationStore } from '@/stores/notification'
 import { useAccountStore } from '@/stores/account'
 import { parseSyncError } from '@/services/email/errorUtils'
-import { phishingDetectionService } from '@/services/phishing/phishingDetectionService'
 
 export interface Email {
   id: string
@@ -77,73 +75,8 @@ export const useMailboxStore = defineStore('mailbox', () => {
 
       console.log('[MailboxStore] 同步结果:', result)
 
-      // 检查账户是否启用钓鱼检测
-      const account = accountStore.accounts.find(a => a.id === accountId)
-      const phishingEnabled = account?.phishingDetectionEnabled
-
-      console.log('[MailboxStore] 账户钓鱼检测设置:', {
-        accountId,
-        phishingEnabled,
-        accountFound: !!account
-      })
-
-      // 如果有新邮件且启用了钓鱼检测，进行检测
-      if (result.new > 0 && phishingEnabled) {
-        console.log('[MailboxStore] 开始钓鱼检测流程，新邮件数量:', result.new)
-
-        syncProgress.value = '正在检测钓鱼邮件...'
-
-        // 加载新邮件列表
-        await loadEmails(accountId)
-
-        // 对未检测过的邮件进行钓鱼检测（按时间倒序，检测最新的几封）
-        const emailsToCheck = emails.value.slice(0, Math.min(result.new, 5))
-        console.log('[MailboxStore] 待检测邮件数量:', emailsToCheck.length)
-
-        for (const email of emailsToCheck) {
-          console.log('[MailboxStore] 检测邮件:', email.id, email.subject)
-
-          try {
-            // 获取邮件详情以获取完整内容
-            const detail = await getEmailDetail(email.id)
-
-            if (detail) {
-              // 调用钓鱼检测
-              const phishingResult = await phishingDetectionService.detectPhishing({
-                from_address: detail.from_address || '',
-                from_name: detail.from_name || undefined,
-                subject: detail.subject || undefined,
-                body_text: detail.body_text || undefined,
-                body_html: detail.body_html || undefined
-              })
-
-              console.log('[MailboxStore] 钓鱼检测结果:', email.id, phishingResult)
-
-              // 如果检测为钓鱼邮件，更新状态
-              if (phishingResult.is_phishing) {
-                console.log('[MailboxStore] 发现钓鱼邮件:', email.id)
-                await updatePhishingStatus(
-                  email.id,
-                  true,
-                  phishingResult.reasons
-                )
-
-                // 更新本地邮件状态
-                const localEmail = emails.value.find(e => e.id === email.id)
-                if (localEmail) {
-                  localEmail.isPhishing = true
-                  localEmail.phishingReasons = phishingResult.reasons
-                }
-              }
-            }
-          } catch (e) {
-            console.error('[MailboxStore] 钓鱼检测失败:', email.id, e)
-            // 检测失败不阻塞流程
-          }
-        }
-
-        console.log('[MailboxStore] 钓鱼检测流程完成')
-      }
+      // 钓鱼检测现在在后端执行，邮件保存时已自动完成检测
+      // 钓鱼邮件不会出现在收件箱中（数据库查询过滤 is_phishing=0）
 
       syncProgress.value = '正在更新本地数据...'
       // Refresh email list after sync
@@ -161,7 +94,10 @@ export const useMailboxStore = defineStore('mailbox', () => {
 
       return result
     } catch (e) {
-      const parsed = parseSyncError(e)
+      // 获取账户协议类型用于正确的错误信息
+      const account = accountStore.accounts.find(a => a.id === accountId)
+      const protocol = account?.protocol === 'imap' ? 'imap' : 'pop3'
+      const parsed = parseSyncError(e, protocol)
       error.value = parsed.message
 
       // Show error notification

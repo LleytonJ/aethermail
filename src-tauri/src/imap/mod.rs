@@ -8,4 +8,3 @@ mod client;
 
 pub use types::*;
 pub use client::ImapClient;
-pub use client::ImapSession;

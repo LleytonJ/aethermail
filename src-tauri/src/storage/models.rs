@@ -35,6 +35,9 @@ pub struct DbEmail {
     pub is_phishing: bool,
     /// 钓鱼检测原因 (JSON array)
     pub phishing_reasons: Option<String>,
+    /// 用户是否手动覆盖了钓鱼判定（移回收件箱后不再重复检测）
+    #[serde(default)]
+    pub user_overridden: bool,
 }
 
 /// Attachment stored in database

@@ -3,10 +3,13 @@
  */
 
 /**
- * Parse POP3 connection error into user-friendly message
+ * Parse connection error into user-friendly message
+ * @param error - The error object or message
+ * @param protocol - The protocol type ('imap' or 'pop3')
  */
-export function parseConnectionError(error: unknown): { title: string; message: string } {
+export function parseConnectionError(error: unknown, protocol: 'imap' | 'pop3' = 'pop3'): { title: string; message: string } {
   const errorMsg = error instanceof Error ? error.message : String(error)
+  const protocolName = protocol === 'imap' ? 'IMAP' : 'POP3'
 
   // Connection timeout
   if (errorMsg.includes('连接超时') || errorMsg.includes('timeout')) {
@@ -28,7 +31,7 @@ export function parseConnectionError(error: unknown): { title: string; message: 
   if (errorMsg.includes('连接失败') || errorMsg.includes('refused') || errorMsg.includes('ECONNREFUSED')) {
     return {
       title: '无法连接服务器',
-      message: '服务器地址或端口可能不正确，请检查 POP3 服务器设置。'
+      message: `服务器地址或端口可能不正确，请检查 ${protocolName} 服务器设置。`
     }
   }
 
@@ -36,7 +39,7 @@ export function parseConnectionError(error: unknown): { title: string; message: 
   if (errorMsg.includes('主机') || errorMsg.includes('DNS') || errorMsg.includes('resolve')) {
     return {
       title: '无法找到服务器',
-      message: '服务器地址不存在，请确认 POP3 服务器地址是否正确。'
+      message: `服务器地址不存在，请确认 ${protocolName} 服务器地址是否正确。`
     }
   }
 
@@ -56,20 +59,23 @@ export function parseConnectionError(error: unknown): { title: string; message: 
 }
 
 /**
- * Parse POP3 authentication error into user-friendly message
+ * Parse authentication error into user-friendly message
+ * @param error - The error object or message
+ * @param protocol - The protocol type ('imap' or 'pop3')
  */
-export function parseAuthError(error: unknown): { title: string; message: string } {
+export function parseAuthError(error: unknown, protocol: 'imap' | 'pop3' = 'pop3'): { title: string; message: string } {
   const errorMsg = error instanceof Error ? error.message : String(error)
+  const protocolName = protocol === 'imap' ? 'IMAP' : 'POP3'
 
   // Authentication failed
-  if (errorMsg.includes('认证失败') || errorMsg.includes('PASS')) {
+  if (errorMsg.includes('认证失败') || errorMsg.includes('PASS') || errorMsg.includes('LOGIN')) {
     return {
       title: '认证失败',
-      message: '用户名或密码错误，请确认已开启邮箱的 POP3 服务并使用正确的密码。'
+      message: `用户名或密码错误，请确认已开启邮箱的 ${protocolName} 服务并使用正确的密码。`
     }
   }
 
-  // USER command failed
+  // USER command failed (POP3 specific)
   if (errorMsg.includes('USER')) {
     return {
       title: '用户名错误',
@@ -81,7 +87,7 @@ export function parseAuthError(error: unknown): { title: string; message: string
   if (errorMsg.includes('locked') || errorMsg.includes('disabled') || errorMsg.includes('禁用')) {
     return {
       title: '账户被锁定',
-      message: '该邮箱账户可能被锁定或 POP3 服务未开启，请联系邮箱服务商。'
+      message: `该邮箱账户可能被锁定或 ${protocolName} 服务未开启，请联系邮箱服务商。`
     }
   }
 
@@ -94,18 +100,20 @@ export function parseAuthError(error: unknown): { title: string; message: string
 
 /**
  * Parse sync error into user-friendly message
+ * @param error - The error object or message
+ * @param protocol - The protocol type ('imap' or 'pop3')
  */
-export function parseSyncError(error: unknown): { title: string; message: string } {
+export function parseSyncError(error: unknown, protocol: 'imap' | 'pop3' = 'pop3'): { title: string; message: string } {
   const errorMsg = error instanceof Error ? error.message : String(error)
 
   // Connection errors during sync
   if (errorMsg.includes('连接') || errorMsg.includes('timeout')) {
-    return parseConnectionError(error)
+    return parseConnectionError(error, protocol)
   }
 
   // Authentication errors during sync
-  if (errorMsg.includes('认证') || errorMsg.includes('USER') || errorMsg.includes('PASS')) {
-    return parseAuthError(error)
+  if (errorMsg.includes('认证') || errorMsg.includes('USER') || errorMsg.includes('PASS') || errorMsg.includes('LOGIN')) {
+    return parseAuthError(error, protocol)
   }
 
   // Database errors

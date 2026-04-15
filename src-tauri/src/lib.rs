@@ -5,6 +5,8 @@ mod imap;
 mod smtp;
 mod storage;
 mod commands;
+mod ai;
+mod utils;
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -25,7 +27,28 @@ pub fn run() {
     }
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_log::Builder::new().build())
+        .plugin(tauri_plugin_log::Builder::new()
+            .targets([
+                tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview),
+            ])
+            .level(log::LevelFilter::Info)
+            // 过滤掉 async-openai 库的内部日志
+            .filter(|metadata| {
+                // 只显示我们自己的日志，过滤掉第三方库的 verbose 日志
+                let target = metadata.target();
+                // 保留 aethermail 自己的模块日志
+                if target.starts_with("aethermail") {
+                    true
+                } else if target.contains("async_openai") || target.contains("reqwest") {
+                    // 过滤掉 async-openai 和 reqwest 的内部日志
+                    metadata.level() <= log::LevelFilter::Warn
+                } else {
+                    // 其他库的日志，只显示 warn 及以上
+                    metadata.level() <= log::LevelFilter::Warn
+                }
+            })
+            .build())
         .plugin(tauri_plugin_sql::Builder::default().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())

@@ -157,12 +157,14 @@ export async function deleteAccountEmails(accountId: string): Promise<void> {
 export async function updatePhishingStatus(
   id: string,
   isPhishing: boolean,
-  phishingReasons: string[] | null
+  phishingReasons: string[] | null,
+  userOverridden?: boolean
 ): Promise<void> {
   return invoke('update_phishing_status', {
     id,
     isPhishing,
-    phishingReasons
+    phishingReasons,
+    userOverridden
   })
 }
 

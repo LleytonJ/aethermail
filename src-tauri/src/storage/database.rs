@@ -48,6 +48,7 @@ impl Database {
                 has_attachment INTEGER NOT NULL DEFAULT 0,
                 is_phishing INTEGER NOT NULL DEFAULT 0,
                 phishing_reasons TEXT,
+                user_overridden INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(account_id, uidl)
             );
 
@@ -110,6 +111,14 @@ impl Database {
                 .map_err(|e| format!("添加 phishing_reasons 字段失败: {}", e))?;
         }
 
+        // 如果 user_overridden 字段不存在，添加它
+        if !columns.contains(&"user_overridden".to_string()) {
+            sqlx::query("ALTER TABLE emails ADD COLUMN user_overridden INTEGER NOT NULL DEFAULT 0")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| format!("添加 user_overridden 字段失败: {}", e))?;
+        }
+
         // 如果是新数据库（字段已存在于 CREATE TABLE），确保索引存在
         if columns.contains(&"is_phishing".to_string()) {
             // 检查索引是否存在
@@ -139,8 +148,8 @@ impl Database {
             INSERT OR REPLACE INTO emails
             (id, account_id, uidl, from_address, from_name, to_addresses, cc_addresses,
              subject, body_text, body_html, date, is_read, is_starred, has_attachment,
-             is_phishing, phishing_reasons)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             is_phishing, phishing_reasons, user_overridden)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&email.id)
@@ -159,6 +168,7 @@ impl Database {
         .bind(email.has_attachment as i32)
         .bind(email.is_phishing as i32)
         .bind(&email.phishing_reasons)
+        .bind(email.user_overridden as i32)
         .execute(&self.pool)
         .await
         .map_err(|e| format!("保存邮件失败: {}", e))?;
@@ -172,7 +182,7 @@ impl Database {
             r#"
             SELECT id, account_id, uidl, from_address, from_name, to_addresses, cc_addresses,
                    subject, body_text, body_html, date, is_read, is_starred, has_attachment,
-                   is_phishing, phishing_reasons
+                   is_phishing, phishing_reasons, user_overridden
             FROM emails
             WHERE account_id = ? AND is_phishing = 0
             ORDER BY date DESC
@@ -202,6 +212,7 @@ impl Database {
                 has_attachment: row.get::<i32, _>("has_attachment") == 1,
                 is_phishing: row.get::<i32, _>("is_phishing") == 1,
                 phishing_reasons: row.get("phishing_reasons"),
+                user_overridden: row.get::<i32, _>("user_overridden") == 1,
             })
             .collect();
 
@@ -214,7 +225,7 @@ impl Database {
             r#"
             SELECT id, account_id, uidl, from_address, from_name, to_addresses, cc_addresses,
                    subject, body_text, body_html, date, is_read, is_starred, has_attachment,
-                   is_phishing, phishing_reasons
+                   is_phishing, phishing_reasons, user_overridden
             FROM emails
             WHERE id = ?
             "#,
@@ -241,6 +252,7 @@ impl Database {
             has_attachment: row.get::<i32, _>("has_attachment") == 1,
             is_phishing: row.get::<i32, _>("is_phishing") == 1,
             phishing_reasons: row.get("phishing_reasons"),
+            user_overridden: row.get::<i32, _>("user_overridden") == 1,
         }))
     }
 
@@ -356,14 +368,27 @@ impl Database {
         id: &str,
         is_phishing: bool,
         phishing_reasons: Option<String>,
+        user_overridden: Option<bool>,
     ) -> Result<(), String> {
-        sqlx::query("UPDATE emails SET is_phishing = ?, phishing_reasons = ? WHERE id = ?")
-            .bind(is_phishing as i32)
-            .bind(phishing_reasons)
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| format!("更新钓鱼状态失败: {}", e))?;
+        // 如果提供了 user_overridden，则更新它
+        if let Some(overridden) = user_overridden {
+            sqlx::query("UPDATE emails SET is_phishing = ?, phishing_reasons = ?, user_overridden = ? WHERE id = ?")
+                .bind(is_phishing as i32)
+                .bind(phishing_reasons)
+                .bind(overridden as i32)
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| format!("更新钓鱼状态失败: {}", e))?;
+        } else {
+            sqlx::query("UPDATE emails SET is_phishing = ?, phishing_reasons = ? WHERE id = ?")
+                .bind(is_phishing as i32)
+                .bind(phishing_reasons)
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| format!("更新钓鱼状态失败: {}", e))?;
+        }
 
         Ok(())
     }
@@ -374,7 +399,7 @@ impl Database {
             r#"
             SELECT id, account_id, uidl, from_address, from_name, to_addresses, cc_addresses,
                    subject, body_text, body_html, date, is_read, is_starred, has_attachment,
-                   is_phishing, phishing_reasons
+                   is_phishing, phishing_reasons, user_overridden
             FROM emails
             WHERE account_id = ? AND is_phishing = 1
             ORDER BY date DESC
@@ -404,6 +429,7 @@ impl Database {
                 has_attachment: row.get::<i32, _>("has_attachment") == 1,
                 is_phishing: row.get::<i32, _>("is_phishing") == 1,
                 phishing_reasons: row.get("phishing_reasons"),
+                user_overridden: row.get::<i32, _>("user_overridden") == 1,
             })
             .collect();
 

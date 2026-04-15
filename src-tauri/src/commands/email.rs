@@ -10,7 +10,9 @@ use crate::pop3::{Pop3Client, Pop3Config, Pop3Credentials, ParsedEmail, EmailAtt
 use crate::imap::{ImapClient, ImapConfig, ImapCredentials};
 use crate::smtp::{SmtpClient, SmtpConfig, SmtpCredentials, EmailMessage, SendEmailResult};
 use crate::storage::{Database, DbEmail, DbAttachment};
-use crate::commands::account::{get_accounts, ProtocolType, AccountConfig};
+use crate::commands::account::{get_accounts, ProtocolType};
+use crate::ai::{AiClient, is_ai_available};
+use crate::utils::html_extractor::HtmlExtractor;
 
 /// Global database instance
 static DB: std::sync::OnceLock<Arc<RwLock<Option<Database>>>> = std::sync::OnceLock::new();
@@ -123,6 +125,103 @@ pub async fn sync_emails(account_id: String) -> Result<SyncResult, String> {
     }
 }
 
+/// 检测邮件是否为钓鱼邮件
+/// 返回 (is_phishing, phishing_reasons)
+async fn detect_phishing_for_email(parsed: &ParsedEmail) -> (bool, Option<Vec<String>>) {
+    log::info!("[Sync] ========== 开始钓鱼检测流程 ==========");
+    log::info!("[Sync] 邮件信息:");
+    log::info!("[Sync]   UIDL: {}", parsed.uidl);
+    log::info!("[Sync]   发件人: {} ({})", parsed.from_name.as_deref().unwrap_or("未知"), parsed.from_address.as_deref().unwrap_or("未知"));
+    log::info!("[Sync]   主题: {}", parsed.subject.as_deref().unwrap_or("无主题"));
+    log::info!("[Sync]   正文长度: {} 字符", parsed.body_text.as_deref().map(|t| t.len()).unwrap_or(0));
+
+    // 检查 AI 是否可用
+    log::info!("[Sync] 步骤1: 检查 AI 服务可用性");
+    if !is_ai_available() {
+        log::warn!("[Sync] AI 未启用或配置不完整，跳过钓鱼检测");
+        log::info!("[Sync] ========== 钓鱼检测跳过 (AI未启用) ==========");
+        return (false, None);
+    }
+    log::info!("[Sync] AI 服务可用");
+
+    // 创建 AI 客户端
+    log::info!("[Sync] 步骤2: 创建 AI 客户端");
+    let ai_client = match AiClient::new() {
+        Ok(client) => {
+            log::info!("[Sync] AI 客户端创建成功");
+            client
+        }
+        Err(e) => {
+            log::error!("[Sync] 创建 AI 客户端失败: {}", e);
+            log::info!("[Sync] ========== 钓鱼检测失败 (客户端创建失败) ==========");
+            return (false, None);
+        }
+    };
+
+    // 检查客户端是否可用
+    log::info!("[Sync] 步骤3: 检查客户端可用性");
+    if !ai_client.is_available() {
+        log::warn!("[Sync] AI 客户端不可用，跳过钓鱼检测");
+        log::info!("[Sync] ========== 钓鱼检测跳过 (客户端不可用) ==========");
+        return (false, None);
+    }
+    log::info!("[Sync] 客户端可用");
+
+    // 构建检测内容
+    log::info!("[Sync] 步骤4: 构建检测内容");
+    let email_content = format!(
+        "<email_content>
+发件人: {} ({})
+收件人: {}
+主题: {}
+
+邮件内容:
+{}
+</email_content>
+
+请分析上述邮件是否为钓鱼邮件，输出 JSON 结果。",
+        parsed.from_name.as_deref().unwrap_or("未知"),
+        parsed.from_address.as_deref().unwrap_or("未知"),
+        parsed.to_addresses.join(", "),
+        parsed.subject.as_deref().unwrap_or("无主题"),
+        parsed.body_text.as_deref().unwrap_or("无内容")
+    );
+
+    log::info!("[Sync] 检测内容长度: {} 字符", email_content.len());
+    log::debug!("[Sync] 检测内容前500字符: {}", if email_content.len() > 500 { &email_content[..500] } else { &email_content });
+
+    // 调用 AI 检测（10秒超时）
+    log::info!("[Sync] 步骤5: 调用 AI API 进行检测");
+    log::info!("[Sync] 超时设置: 10000ms");
+
+    match ai_client.detect_phishing(&email_content, 10000).await {
+        Ok(result) => {
+            log::info!("[Sync] 钓鱼检测完成:");
+            log::info!("[Sync]   is_phishing: {}", result.is_phishing);
+            log::info!("[Sync]   reasons数量: {}", result.reasons.len());
+            for (i, reason) in result.reasons.iter().enumerate() {
+                log::info!("[Sync]   reason[{}]: {}", i, reason);
+            }
+            log::info!("[Sync] ========== 钓鱼检测完成 ==========");
+
+            if result.is_phishing {
+                log::warn!("[Sync] ⚠️ 发现钓鱼邮件! UIDL: {}", parsed.uidl);
+            } else {
+                log::info!("[Sync] ✓ 邮件安全，非钓鱼邮件");
+            }
+
+            (result.is_phishing, Some(result.reasons))
+        }
+        Err(e) => {
+            // 检测失败时保守处理：不标记为钓鱼邮件
+            log::error!("[Sync] 钓鱼检测失败: {}", e);
+            log::warn!("[Sync] 检测失败，保守处理：不标记为钓鱼邮件");
+            log::info!("[Sync] ========== 钓鱼检测失败 (保守处理) ==========");
+            (false, None)
+        }
+    }
+}
+
 /// Sync emails via POP3 protocol
 async fn sync_via_pop3(account: &crate::commands::account::AccountConfig) -> Result<SyncResult, String> {
     let account_id = account.id.clone();
@@ -179,6 +278,11 @@ async fn sync_via_pop3(account: &crate::commands::account::AccountConfig) -> Res
                 // Parse email
                 let parsed = parse_email(&raw_email.raw_content, &uidl);
 
+                // 钓鱼检测（在保存前执行）
+                let (is_phishing, phishing_reasons) = detect_phishing_for_email(&parsed).await;
+                let phishing_reasons_json = phishing_reasons
+                    .map(|r| serde_json::to_string(&r).unwrap_or_default());
+
                 // Create database record
                 let db_email = DbEmail {
                     id: format!("email-{}", chrono::Utc::now().timestamp_millis()),
@@ -195,8 +299,9 @@ async fn sync_via_pop3(account: &crate::commands::account::AccountConfig) -> Res
                     is_read: false,
                     is_starred: false,
                     has_attachment: parsed.has_attachments,
-                    is_phishing: false,
-                    phishing_reasons: None,
+                    is_phishing,
+                    phishing_reasons: phishing_reasons_json,
+                    user_overridden: false,
                 };
 
                 let email_id = db_email.id.clone();
@@ -292,6 +397,11 @@ async fn sync_via_imap(account: &crate::commands::account::AccountConfig) -> Res
                 let uidl = format!("{}", imap_message.uid);
                 let parsed = parse_email(&imap_message.raw_content, &uidl);
 
+                // 钓鱼检测（在保存前执行）
+                let (is_phishing, phishing_reasons) = detect_phishing_for_email(&parsed).await;
+                let phishing_reasons_json = phishing_reasons
+                    .map(|r| serde_json::to_string(&r).unwrap_or_default());
+
                 // Create database record (use imap-{uid} as id)
                 let db_email = DbEmail {
                     id: format!("imap-{}-{}", account_id, imap_message.uid),
@@ -308,8 +418,9 @@ async fn sync_via_imap(account: &crate::commands::account::AccountConfig) -> Res
                     is_read: false,
                     is_starred: false,
                     has_attachment: parsed.has_attachments,
-                    is_phishing: false,
-                    phishing_reasons: None,
+                    is_phishing,
+                    phishing_reasons: phishing_reasons_json,
+                    user_overridden: false,
                 };
 
                 let email_id = db_email.id.clone();
@@ -392,9 +503,30 @@ fn parse_email(raw_content: &str, uidl: &str) -> ParsedEmail {
         // Date
         result.date = msg.date().map(|d| d.to_timestamp());
 
-        // Body
-        result.body_text = msg.body_text(0).map(|s| s.to_string());
-        result.body_html = msg.body_html(0).map(|s| s.to_string());
+        // Body - 智能文本提取
+        // 1. 先获取 mail-parser 提供的 body_text
+        let raw_body_text = msg.body_text(0).map(|s| s.to_string());
+        let raw_body_html = msg.body_html(0).map(|s| s.to_string());
+
+        // 2. 检查 body_text 是否干净（无 CSS/JS 干扰）
+        result.body_text = match raw_body_text {
+            Some(text) if HtmlExtractor::is_text_clean(&text) => {
+                // body_text 干净，直接使用
+                Some(text)
+            }
+            Some(text) if text.trim().is_empty() && raw_body_html.is_some() => {
+                // body_text 为空但有 HTML，从 HTML 提取
+                raw_body_html.as_ref().map(|html| HtmlExtractor::extract_clean_text(html))
+            }
+            Some(_) if raw_body_html.is_some() => {
+                // body_text 不干净（含 CSS/JS），从 HTML 提取干净文本
+                log::info!("[EmailParser] body_text 包含 CSS/JS 干扰，使用 scraper 提取干净文本");
+                raw_body_html.as_ref().map(|html| HtmlExtractor::extract_clean_text(html))
+            }
+            _ => raw_body_text, // 其他情况保持原样
+        };
+
+        result.body_html = raw_body_html;
 
         // Attachments
         let attachments: Vec<EmailAttachment> = msg
@@ -549,6 +681,7 @@ pub async fn update_phishing_status(
     id: String,
     is_phishing: bool,
     phishing_reasons: Option<Vec<String>>,
+    user_overridden: Option<bool>,
 ) -> Result<(), String> {
     let db = get_db().await?;
 
@@ -556,7 +689,7 @@ pub async fn update_phishing_status(
     let reasons_json = phishing_reasons
         .map(|r| serde_json::to_string(&r).unwrap_or_default());
 
-    db.update_phishing_status(&id, is_phishing, reasons_json).await
+    db.update_phishing_status(&id, is_phishing, reasons_json, user_overridden).await
 }
 
 /// Get phishing emails for an account

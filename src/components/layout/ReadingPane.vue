@@ -158,8 +158,8 @@ async function handleMoveToInbox() {
   if (!currentEmail.value) return
 
   try {
-    // 更新钓鱼状态为 false
-    await updatePhishingStatus(currentEmail.value.id, false, null)
+    // 更新钓鱼状态为 false，并标记为用户覆盖（不再重复检测）
+    await updatePhishingStatus(currentEmail.value.id, false, null, true)
 
     // 更新本地邮件状态
     const email = store.emails.find(e => e.id === currentEmail.value?.id)

@@ -5,7 +5,7 @@
       v-if="html"
       ref="htmlFrame"
       class="email-iframe"
-      sandbox="allow-same-origin allow-scripts"
+      sandbox="allow-same-origin"
       @load="onFrameLoad"
     ></iframe>
 
@@ -69,70 +69,38 @@ const htmlFrame = ref<HTMLIFrameElement | null>(null)
 const showLinkDialog = ref(false)
 const pendingLinkUrl = ref('')
 
-// 邮件内容的内联样式（不影响外部）
+// 邮件内容的基础样式（不覆盖邮件自有样式）
 const emailStyles = `
   body {
     font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    color: #cbd5e1;
     font-size: 14px;
-    line-height: 1.7;
+    line-height: 1.6;
     background: transparent;
     margin: 0;
-    padding: 20px;
+    padding: 16px;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    color: #cbd5e1;
   }
-  p { margin: 0 0 1em 0; }
-  p:last-child { margin-bottom: 0; }
-  a { color: #818cf8; text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  img { max-width: 100%; height: auto; border-radius: 8px; margin: 1em 0; }
-  blockquote {
-    border-left: 3px solid rgba(255, 255, 255, 0.1);
-    padding-left: 1rem;
-    margin: 1em 0;
-    color: #64748b;
-    font-style: italic;
-  }
-  pre {
-    background: rgba(51, 65, 85, 0.75);
-    padding: 1rem;
-    border-radius: 8px;
-    overflow-x: auto;
-    margin: 1em 0;
-  }
-  code {
-    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
-    font-size: 0.9em;
-    background: rgba(51, 65, 85, 0.75);
-    padding: 0.2em 0.4em;
-    border-radius: 4px;
-  }
-  pre code { background: none; padding: 0; }
-  ul, ol { padding-left: 1.5rem; margin: 1em 0; }
-  li { margin: 0.25em 0; }
-  h1, h2, h3, h4 { color: #f8fafc; font-weight: 600; margin: 1.5em 0 0.5em 0; }
-  table { width: 100%; border-collapse: collapse; margin: 1em 0; }
-  th, td { border: 1px solid rgba(255, 255, 255, 0.06); padding: 0.5rem 0.75rem; text-align: left; }
-  th { background: rgba(51, 65, 85, 0.75); font-weight: 600; }
-  hr { border: none; border-top: 1px solid rgba(255, 255, 255, 0.06); margin: 2em 0; }
+  /* 只设置图片和表格的基础约束，避免溢出 */
+  img { max-width: 100%; height: auto; }
+  table { max-width: 100%; }
+  pre { overflow-x: auto; }
 `
 
-// 清理 HTML 内容，移除可能导致问题的元素
+// 清理 HTML 内容，移除危险元素但保留样式
 function sanitizeEmailHtml(html: string): string {
   return DOMPurify.sanitize(html, {
-    USE_PROFILES: { html: true },
-    ALLOWED_TAGS: [
-      'p', 'br', 'strong', 'em', 'u', 's', 'a', 'img',
-      'div', 'span',
-      'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-      'ul', 'ol', 'li',
-      'table', 'thead', 'tbody', 'tr', 'th', 'td',
-      'blockquote', 'pre', 'code', 'hr'
+    ALLOW_UNKNOWN_PROTOCOLS: false,
+    // 只禁止危险标签，保留样式相关标签
+    FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'form', 'input', 'button'],
+    // 允许样式属性，让邮件正常显示
+    ALLOWED_ATTR: [
+      'href', 'src', 'alt', 'title', 'width', 'height', 'class', 'style',
+      'target', 'rel', 'colspan', 'rowspan', 'cellpadding', 'cellspacing',
+      'border', 'align', 'valign', 'bgcolor', 'color', 'dir', 'lang',
+      'background', 'data-*'
     ],
-    // 禁止所有可能导致样式冲突或安全问题的属性
-    FORBID_ATTR: ['style', 'class', 'id', 'onclick', 'onerror', 'onload', 'onmouseover'],
-    ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'width', 'height', 'target'],
-    // 禁止脚本相关标签
-    FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'button'],
     FORCE_BODY: true
   })
 }

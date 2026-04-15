@@ -48,3 +48,9 @@ base64 = "0.22"
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+
+# AI integration
+async-openai = "0.27"
+
+# HTML parsing for text extraction
+scraper = "0.22"

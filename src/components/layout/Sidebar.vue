@@ -175,6 +175,9 @@ watch(
   }
 )
 
+// 钓鱼检测现在在后端执行，邮件同步后会自动刷新列表
+// 不再需要监听前端钓鱼检测事件
+
 const folders = computed(() => [
   { id: 'inbox', icon: Inbox, label: '收件箱', count: mailboxStore.unreadCount },
   // { id: 'sent', icon: Send, label: '已发送', count: 0 },  // 功能未实现

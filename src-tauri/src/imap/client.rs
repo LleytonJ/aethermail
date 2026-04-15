@@ -24,7 +24,7 @@ impl ImapClient {
         Self { config, credentials }
     }
 
-    /// Test connection to IMAP server
+    /// Test connection to IMAP server (includes authentication)
     pub async fn test_connection(&self) -> Result<ConnectionTestResult, String> {
         let addr = format!("{}:{}", self.config.host, self.config.port);
 
@@ -52,32 +52,47 @@ impl ImapClient {
             // Convert to async-std compatible stream
             let compat_stream = tls_stream.compat();
 
-            // Connect via async-imap and read greeting
-            let mut client = Client::new(compat_stream);
-            let greeting = client
-                .read_response()
-                .await
-                .map_err(|e| format!("读取服务器响应失败: {:?}", e))?;
+            // Connect via async-imap
+            let client = Client::new(compat_stream);
 
-            Ok(ConnectionTestResult {
-                success: true,
-                message: "连接成功".to_string(),
-                server_greeting: Some(format!("{:?}", greeting)),
-            })
+            // Perform LOGIN authentication to verify credentials
+            let result = client
+                .login(&self.credentials.username, &self.credentials.password)
+                .await;
+
+            match result {
+                Ok(mut session) => {
+                    // Logout after successful test
+                    let _ = session.logout().await;
+                    Ok(ConnectionTestResult {
+                        success: true,
+                        message: "连接并认证成功".to_string(),
+                        server_greeting: None,
+                    })
+                },
+                Err((error, _client)) => Err(format!("认证失败: {:?}", error)),
+            }
         } else {
             // Plain connection (not recommended for production)
             let compat_stream = stream.compat();
-            let mut client = Client::new(compat_stream);
-            let greeting = client
-                .read_response()
-                .await
-                .map_err(|e| format!("读取服务器响应失败: {:?}", e))?;
+            let client = Client::new(compat_stream);
 
-            Ok(ConnectionTestResult {
-                success: true,
-                message: "连接成功".to_string(),
-                server_greeting: Some(format!("{:?}", greeting)),
-            })
+            // Perform LOGIN authentication
+            let result = client
+                .login(&self.credentials.username, &self.credentials.password)
+                .await;
+
+            match result {
+                Ok(mut session) => {
+                    let _ = session.logout().await;
+                    Ok(ConnectionTestResult {
+                        success: true,
+                        message: "连接并认证成功".to_string(),
+                        server_greeting: None,
+                    })
+                },
+                Err((error, _client)) => Err(format!("认证失败: {:?}", error)),
+            }
         }
     }
 
