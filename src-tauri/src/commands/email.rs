@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tauri::Emitter;
 
 use crate::pop3::{Pop3Client, Pop3Config, Pop3Credentials, ParsedEmail, EmailAttachment};
 use crate::imap::{ImapClient, ImapConfig, ImapCredentials};
@@ -16,6 +17,9 @@ use crate::utils::html_extractor::HtmlExtractor;
 
 /// Global database instance
 static DB: std::sync::OnceLock<Arc<RwLock<Option<Database>>>> = std::sync::OnceLock::new();
+
+/// Global app data directory for cache
+static APP_DATA_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 /// Initialize the database
 pub async fn init_database(app_data_dir: PathBuf) -> Result<(), String> {
@@ -32,7 +36,36 @@ pub async fn init_database(app_data_dir: PathBuf) -> Result<(), String> {
     let mut db_guard = db_cell.write().await;
     *db_guard = Some(database);
 
+    // Store app data directory for cache
+    APP_DATA_DIR.get_or_init(|| app_data_dir.clone());
+
     Ok(())
+}
+
+/// Get app data directory
+fn get_app_data_dir() -> Result<PathBuf, String> {
+    APP_DATA_DIR
+        .get()
+        .cloned()
+        .ok_or_else(|| "应用数据目录未初始化".to_string())
+}
+
+/// Get cache directory path
+fn get_cache_directory() -> Result<PathBuf, String> {
+    let app_dir = get_app_data_dir()?;
+    let cache_dir = app_dir.join("attachments");
+
+    // Ensure directory exists
+    std::fs::create_dir_all(&cache_dir)
+        .map_err(|e| format!("创建缓存目录失败: {}", e))?;
+
+    Ok(cache_dir)
+}
+
+/// Get attachment cache file path
+fn get_attachment_cache_path(attachment_id: &str) -> Result<PathBuf, String> {
+    let cache_dir = get_cache_directory()?;
+    Ok(cache_dir.join(format!("{}.dat", attachment_id)))
 }
 
 /// Get database instance
@@ -222,7 +255,7 @@ async fn detect_phishing_for_email(parsed: &ParsedEmail) -> (bool, Option<Vec<St
     }
 }
 
-/// Sync emails via POP3 protocol
+/// Sync emails via POP3 protocol (attachments still downloaded, but stored with new structure)
 async fn sync_via_pop3(account: &crate::commands::account::AccountConfig) -> Result<SyncResult, String> {
     let account_id = account.id.clone();
 
@@ -308,7 +341,9 @@ async fn sync_via_pop3(account: &crate::commands::account::AccountConfig) -> Res
 
                 // Save email
                 if db.save_email(&db_email).await.is_ok() {
-                    // Save attachments
+                    // Save attachments (POP3 全量下载，但使用新结构)
+                    // 注意：POP3 无法获取 IMAP section，所以 imap_section = None
+                    // 附件内容暂时不保存到文件（需要 app_handle），标记为未下载
                     if !parsed.attachments.is_empty() {
                         for att in parsed.attachments {
                             let db_att = DbAttachment {
@@ -318,7 +353,9 @@ async fn sync_via_pop3(account: &crate::commands::account::AccountConfig) -> Res
                                 mime_type: att.mime_type,
                                 size: att.size as i64,
                                 content_id: att.content_id,
-                                content: att.content.map(|c| c.into_bytes()),
+                                imap_section: None, // POP3 无 section 信息
+                                is_downloaded: false, // 暂时标记为未下载
+                                local_path: None,
                             };
                             let _ = db.save_attachment(&db_att).await;
                         }
@@ -328,7 +365,7 @@ async fn sync_via_pop3(account: &crate::commands::account::AccountConfig) -> Res
             }
             Err(e) => {
                 // Log error but continue
-                eprintln!("下载邮件 {} 失败: {}", uidl, e);
+                log::error!("下载邮件 {} 失败: {}", uidl, e);
             }
         }
     }
@@ -344,7 +381,7 @@ async fn sync_via_pop3(account: &crate::commands::account::AccountConfig) -> Res
     })
 }
 
-/// Sync emails via IMAP protocol
+/// Sync emails via IMAP protocol (simplified for reliability)
 async fn sync_via_imap(account: &crate::commands::account::AccountConfig) -> Result<SyncResult, String> {
     let account_id = account.id.clone();
 
@@ -391,18 +428,18 @@ async fn sync_via_imap(account: &crate::commands::account::AccountConfig) -> Res
     // Download and save new emails (fetch the latest one for now)
     let mut saved = 0u32;
     if let Some(&latest_uid) = new_uids.last() {
+        // 简化流程：直接获取完整邮件，避免多次 fetch 导致连接断开
         match session.fetch_email(latest_uid).await {
             Ok(imap_message) => {
-                // Parse email using mail-parser
                 let uidl = format!("{}", imap_message.uid);
                 let parsed = parse_email(&imap_message.raw_content, &uidl);
 
-                // 钓鱼检测（在保存前执行）
+                // 钓鱼检测
                 let (is_phishing, phishing_reasons) = detect_phishing_for_email(&parsed).await;
                 let phishing_reasons_json = phishing_reasons
                     .map(|r| serde_json::to_string(&r).unwrap_or_default());
 
-                // Create database record (use imap-{uid} as id)
+                // Create database record
                 let db_email = DbEmail {
                     id: format!("imap-{}-{}", account_id, imap_message.uid),
                     account_id: account_id.clone(),
@@ -427,8 +464,10 @@ async fn sync_via_imap(account: &crate::commands::account::AccountConfig) -> Res
 
                 // Save email
                 if db.save_email(&db_email).await.is_ok() {
-                    // Save attachments
-                    if !parsed.attachments.is_empty() {
+                    // Save attachments (标记为未下载，用户点击时重新 fetch)
+                    // 附件没有 imap_section 信息，需要在下载时重新获取邮件结构
+                    if parsed.has_attachments {
+                        // 从解析结果中获取附件元信息
                         for att in parsed.attachments {
                             let db_att = DbAttachment {
                                 id: format!("att-{}", uuid::Uuid::new_v4()),
@@ -437,7 +476,10 @@ async fn sync_via_imap(account: &crate::commands::account::AccountConfig) -> Res
                                 mime_type: att.mime_type,
                                 size: att.size as i64,
                                 content_id: att.content_id,
-                                content: att.content.map(|c| c.into_bytes()),
+                                // 不存储 section，下载时需要重新解析邮件结构
+                                imap_section: None,
+                                is_downloaded: false,
+                                local_path: None,
                             };
                             let _ = db.save_attachment(&db_att).await;
                         }
@@ -446,7 +488,7 @@ async fn sync_via_imap(account: &crate::commands::account::AccountConfig) -> Res
                 }
             }
             Err(e) => {
-                eprintln!("下载邮件 UID {} 失败: {}", latest_uid, e);
+                log::error!("下载邮件 UID {} 失败: {}", latest_uid, e);
             }
         }
     }
@@ -794,4 +836,395 @@ pub async fn send_email(
 
     // Send email
     Ok(client.send_email(email).await)
+}
+
+// ==================== 附件懒加载相关命令 ====================
+
+/// 下载进度事件 payload
+#[derive(Clone, Serialize)]
+pub struct AttachmentProgress {
+    pub attachment_id: String,
+    pub downloaded: u64,
+    pub total: u64,
+    pub percent: u8,
+}
+
+/// 下载完成事件 payload
+#[derive(Clone, Serialize)]
+pub struct AttachmentComplete {
+    pub attachment_id: String,
+    pub local_path: String,
+}
+
+/// 缓存统计信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheStats {
+    pub file_count: u32,
+    pub total_size: u64,
+    pub cache_path: String,
+}
+
+/// 附件信息（扩展版，包含下载状态）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachmentInfoWithStatus {
+    pub id: String,
+    pub filename: String,
+    pub mime_type: String,
+    pub size: i64,
+    pub is_downloaded: bool,
+    pub local_path: Option<String>,
+}
+
+/// Download a single attachment using velo's approach:
+/// Fetch full message, parse with mail-parser, extract decoded attachment directly.
+/// This avoids IMAP section complexity and ensures content-transfer-encoding is decoded.
+#[tauri::command]
+pub async fn download_attachment(
+    attachment_id: String,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let db = get_db().await?;
+    let att = db.get_attachment_by_id(&attachment_id).await?
+        .ok_or_else(|| "附件不存在".to_string())?;
+
+    // 已下载 → 直接返回路径
+    if att.is_downloaded {
+        return Ok(att.local_path.unwrap_or_default());
+    }
+
+    // 获取邮件和账户信息
+    let email = db.get_email_by_id(&att.email_id).await?
+        .ok_or_else(|| "邮件不存在".to_string())?;
+
+    let accounts = get_accounts()?;
+    let account = accounts
+        .iter()
+        .find(|a| a.id == email.account_id)
+        .ok_or_else(|| "账户不存在".to_string())?;
+
+    // 连接 IMAP
+    let config = ImapConfig {
+        host: account.imap_host.clone(),
+        port: account.imap_port,
+        use_ssl: account.imap_use_ssl,
+    };
+    let credentials = ImapCredentials {
+        username: account.email.clone(),
+        password: account.password.clone(),
+    };
+
+    let client = ImapClient::new(config, credentials);
+    let mut session = client.connect().await?;
+    session.select_inbox().await?;
+
+    // 获取 UID
+    let uid: u32 = email.uidl.parse()
+        .map_err(|_| "邮件 UID 格式错误".to_string())?;
+
+    // 获取完整邮件（velo 方法）
+    log::info!("[Attachment] 获取完整邮件以解析附件 UID={}", uid);
+    let full_email = session.fetch_email(uid).await?;
+
+    // Logout - 尽早关闭连接
+    session.logout().await?;
+
+    // 使用 mail-parser 解析完整邮件
+    let parser = mail_parser::MessageParser::new();
+    let message = parser.parse(full_email.raw_content.as_bytes())
+        .ok_or_else(|| "无法解析邮件内容".to_string())?;
+
+    // 直接从 mail-parser 解析结果中提取附件（无需 section 计算）
+    // mail-parser 已完成 content-transfer-encoding 解码
+    let content = extract_attachment_from_parsed_message(
+        &message,
+        &att.filename,
+        att.content_id.as_deref(),
+    )?;
+
+    log::info!("[Attachment] 附件 '{}' 内容提取成功，大小 {} bytes", att.filename, content.len());
+
+    // 创建缓存文件
+    let cache_path = get_attachment_cache_path(&attachment_id)?;
+    let mut file = std::fs::File::create(&cache_path)
+        .map_err(|e| format!("创建缓存文件失败: {}", e))?;
+
+    // 写入文件并发送进度事件
+    let total = content.len() as u64;
+    let chunk_size = 64 * 1024; // 64KB
+    let mut downloaded = 0u64;
+
+    for chunk in content.chunks(chunk_size) {
+        use std::io::Write;
+        file.write_all(chunk)
+            .map_err(|e| format!("写入文件失败: {}", e))?;
+        downloaded += chunk.len() as u64;
+
+        let percent = if total > 0 {
+            ((downloaded * 100 / total).min(100)) as u8
+        } else {
+            100
+        };
+
+        // 发送进度事件
+        app_handle.emit("attachment-progress", AttachmentProgress {
+            attachment_id: attachment_id.clone(),
+            downloaded,
+            total,
+            percent,
+        }).ok();
+    }
+
+    // 更新数据库
+    let local_path_str = cache_path.to_string_lossy().to_string();
+    db.update_attachment_downloaded(&attachment_id, &local_path_str).await?;
+
+    // 发送完成事件
+    let _ = app_handle.emit("attachment-complete", AttachmentComplete {
+        attachment_id,
+        local_path: local_path_str.clone(),
+    });
+
+    Ok(local_path_str)
+}
+
+/// 从已解析的 mail-parser Message 中提取指定附件的内容
+/// mail-parser 已完成 content-transfer-encoding 解码，直接返回原始二进制数据
+fn extract_attachment_from_parsed_message(
+    message: &mail_parser::Message<'_>,
+    target_filename: &str,
+    target_content_id: Option<&str>,
+) -> Result<Vec<u8>, String> {
+    use mail_parser::PartType;
+
+    // 遍历所有 parts 找到匹配的附件
+    for part in message.parts.iter() {
+        // 只处理 leaf parts（非 multipart）
+        match &part.body {
+            PartType::Multipart(_) => continue, // 跳过 multipart 容器
+            PartType::Binary(data) | PartType::InlineBinary(data) => {
+                // 检查是否匹配目标附件
+                let filename = part.attachment_name().map(|s| s.to_string());
+                let content_id = part.content_id().map(|s| s.to_string());
+
+                // 精确匹配 filename 或 content_id
+                let filename_match = filename.as_ref() == Some(&target_filename.to_string());
+                let content_id_match = target_content_id.is_some() &&
+                    content_id.as_ref() == Some(&target_content_id.unwrap().to_string());
+
+                if filename_match || content_id_match {
+                    log::info!("[Attachment] 精确匹配附件: filename={}, cid={}",
+                        filename.as_deref().unwrap_or("无"),
+                        content_id.as_deref().unwrap_or("无"));
+                    return Ok(data.as_ref().to_vec());
+                }
+
+                // 模糊匹配 filename
+                if let Some(fn_name) = &filename {
+                    if fn_name.contains(target_filename) || target_filename.contains(fn_name) {
+                        log::info!("[Attachment] 模糊匹配附件: {} ~= {}", fn_name, target_filename);
+                        return Ok(data.as_ref().to_vec());
+                    }
+                }
+            }
+            PartType::Text(_) | PartType::Html(_) => {
+                // 文本内容可能是附件（如 .txt 文件）
+                let filename = part.attachment_name().map(|s| s.to_string());
+                let content_id = part.content_id().map(|s| s.to_string());
+
+                let filename_match = filename.as_ref() == Some(&target_filename.to_string());
+                let content_id_match = target_content_id.is_some() &&
+                    content_id.as_ref() == Some(&target_content_id.unwrap().to_string());
+
+                if filename_match || content_id_match {
+                    log::info!("[Attachment] 匹配文本附件: filename={}", filename.as_deref().unwrap_or("无"));
+                    // 根据实际类型获取内容
+                    let bytes = match &part.body {
+                        PartType::Text(t) => t.as_bytes().to_vec(),
+                        PartType::Html(h) => h.as_bytes().to_vec(),
+                        _ => unreachable!(),
+                    };
+                    return Ok(bytes);
+                }
+            }
+            PartType::Message(msg) => {
+                // 嵌套邮件 - 通常不是我们要找的附件
+                let filename = part.attachment_name().map(|s| s.to_string());
+                if filename.as_ref() == Some(&target_filename.to_string()) {
+                    return Ok(msg.raw_message.as_ref().to_vec());
+                }
+            }
+        }
+    }
+
+    // 如果精确匹配失败，尝试使用 attachments() 方法
+    // 这是 mail-parser 提供的便捷方法，返回所有附件
+    log::info!("[Attachment] 使用 attachments() 方法查找...");
+    for att in message.attachments() {
+        let filename = att.attachment_name().map(|s| s.to_string());
+        let content_id = att.content_id().map(|s| s.to_string());
+
+        let filename_match = filename.as_ref() == Some(&target_filename.to_string());
+        let content_id_match = target_content_id.is_some() &&
+            content_id.as_ref() == Some(&target_content_id.unwrap().to_string());
+
+        if filename_match || content_id_match {
+            log::info!("[Attachment] 通过 attachments() 找到: {}", filename.as_deref().unwrap_or("无"));
+            return Ok(att.contents().to_vec());
+        }
+
+        // 模糊匹配
+        if let Some(fn_name) = &filename {
+            if fn_name.contains(target_filename) || target_filename.contains(fn_name) {
+                log::info!("[Attachment] 通过 attachments() 模糊匹配: {} ~= {}", fn_name, target_filename);
+                return Ok(att.contents().to_vec());
+            }
+        }
+    }
+
+    Err(format!("未找到附件: {}", target_filename))
+}
+
+/// Save attachment to a user-selected path
+#[tauri::command]
+pub async fn save_attachment_to_path(
+    attachment_id: String,
+    target_path: String,
+) -> Result<(), String> {
+    let db = get_db().await?;
+    let att = db.get_attachment_by_id(&attachment_id).await?
+        .ok_or_else(|| "附件不存在".to_string())?;
+
+    if !att.is_downloaded {
+        return Err("附件未下载，请先下载附件".to_string());
+    }
+
+    let source_path = att.local_path
+        .ok_or_else(|| "附件缺少本地路径信息".to_string())?;
+
+    std::fs::copy(&source_path, &target_path)
+        .map_err(|e| format!("复制文件失败: {}", e))?;
+
+    Ok(())
+}
+
+/// Get attachment info with download status
+#[tauri::command]
+pub async fn get_attachment_info(attachment_id: String) -> Result<AttachmentInfoWithStatus, String> {
+    let db = get_db().await?;
+    let att = db.get_attachment_by_id(&attachment_id).await?
+        .ok_or_else(|| "附件不存在".to_string())?;
+
+    Ok(AttachmentInfoWithStatus {
+        id: att.id,
+        filename: att.filename,
+        mime_type: att.mime_type,
+        size: att.size,
+        is_downloaded: att.is_downloaded,
+        local_path: att.local_path,
+    })
+}
+
+/// Get attachments for an email with download status
+#[tauri::command]
+pub async fn get_attachments_with_status(email_id: String) -> Result<Vec<AttachmentInfoWithStatus>, String> {
+    let db = get_db().await?;
+    let attachments = db.get_attachments(&email_id).await?;
+
+    Ok(attachments
+        .into_iter()
+        .map(|a| AttachmentInfoWithStatus {
+            id: a.id,
+            filename: a.filename,
+            mime_type: a.mime_type,
+            size: a.size,
+            is_downloaded: a.is_downloaded,
+            local_path: a.local_path,
+        })
+        .collect())
+}
+
+/// Get cache statistics
+#[tauri::command]
+pub async fn get_attachment_cache_stats() -> Result<CacheStats, String> {
+    let cache_dir = get_cache_directory()?;
+
+    let mut file_count = 0u32;
+    let mut total_size = 0u64;
+
+    for entry in std::fs::read_dir(&cache_dir)
+        .map_err(|e| format!("读取缓存目录失败: {}", e))?
+    {
+        let entry = entry.map_err(|e| format!("读取目录项失败: {}", e))?;
+        let path = entry.path();
+
+        if path.extension().map(|e| e == "dat").unwrap_or(false) {
+            file_count += 1;
+            total_size += entry.metadata()
+                .map_err(|e| format!("读取文件元数据失败: {}", e))?
+                .len();
+        }
+    }
+
+    Ok(CacheStats {
+        file_count,
+        total_size,
+        cache_path: cache_dir.to_string_lossy().to_string(),
+    })
+}
+
+/// Clear attachment cache
+#[tauri::command]
+pub async fn clear_attachment_cache() -> Result<(), String> {
+    let db = get_db().await?;
+    let cache_dir = get_cache_directory()?;
+
+    // 删除所有缓存文件
+    for entry in std::fs::read_dir(&cache_dir)
+        .map_err(|e| format!("读取缓存目录失败: {}", e))?
+    {
+        let entry = entry.map_err(|e| format!("读取目录项失败: {}", e))?;
+        let path = entry.path();
+
+        if path.is_file() {
+            std::fs::remove_file(&path)
+                .map_err(|e| format!("删除文件失败: {}", e))?;
+        }
+    }
+
+    // 更新数据库状态
+    db.mark_all_attachments_not_downloaded().await?;
+
+    Ok(())
+}
+
+/// Open cache directory in system file explorer
+#[tauri::command]
+pub async fn open_attachment_cache_directory() -> Result<(), String> {
+    let cache_dir = get_cache_directory()?;
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&cache_dir)
+            .spawn()
+            .map_err(|e| format!("打开目录失败: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&cache_dir)
+            .spawn()
+            .map_err(|e| format!("打开目录失败: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&cache_dir)
+            .spawn()
+            .map_err(|e| format!("打开目录失败: {}", e))?;
+    }
+
+    Ok(())
 }

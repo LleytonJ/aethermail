@@ -7,6 +7,7 @@ import {
   markAsRead as markAsReadService,
   toggleStar as toggleStarService,
   getUnreadCount,
+  getAttachmentsWithStatus,
   type SyncResult
 } from '@/services/email/emailService'
 import { useNotificationStore } from '@/stores/notification'
@@ -40,6 +41,10 @@ export interface Attachment {
   filename: string
   mimeType: string
   size: number
+  /// 是否已下载到本地缓存
+  isDownloaded?: boolean
+  /// 本地缓存路径
+  localPath?: string | null
 }
 
 export const useMailboxStore = defineStore('mailbox', () => {
@@ -146,11 +151,16 @@ export const useMailboxStore = defineStore('mailbox', () => {
         if (detail && email) {
           email.bodyHtml = detail.body_html
           email.bodyText = detail.body_text
-          email.attachments = detail.attachments.map(a => ({
+
+          // 获取附件下载状态
+          const attachmentsWithStatus = await getAttachmentsWithStatus(id)
+          email.attachments = attachmentsWithStatus.map(a => ({
             id: a.id,
             filename: a.filename,
             mimeType: a.mime_type,
-            size: a.size
+            size: a.size,
+            isDownloaded: a.is_downloaded,
+            localPath: a.local_path
           }))
         }
       } catch (e) {

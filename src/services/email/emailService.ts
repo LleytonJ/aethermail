@@ -48,6 +48,27 @@ export interface AttachmentInfo {
 }
 
 /**
+ * 附件信息（含下载状态）
+ */
+export interface AttachmentInfoWithStatus {
+  id: string
+  filename: string
+  mime_type: string
+  size: number
+  is_downloaded: boolean
+  local_path: string | null
+}
+
+/**
+ * 缓存统计信息
+ */
+export interface CacheStats {
+  file_count: number
+  total_size: number
+  cache_path: string
+}
+
+/**
  * 同步账户邮件
  */
 export async function syncEmails(accountId: string): Promise<SyncResult> {
@@ -248,4 +269,67 @@ export async function sendEmail(
     console.error('[emailService] sendEmail - 发送失败:', error)
     throw error
   }
+}
+
+// ==================== 附件懒加载相关函数 ====================
+
+/**
+ * 下载附件
+ * 返回本地缓存路径
+ */
+export async function downloadAttachment(attachmentId: string): Promise<string> {
+  console.log('[emailService] downloadAttachment - 开始下载:', attachmentId)
+
+  try {
+    const result = await invoke<string>('download_attachment', { attachmentId })
+    console.log('[emailService] downloadAttachment - 下载完成:', result)
+    return result
+  } catch (error) {
+    console.error('[emailService] downloadAttachment - 下载失败:', error)
+    throw error
+  }
+}
+
+/**
+ * 保存附件到用户选择的位置
+ */
+export async function saveAttachmentToPath(attachmentId: string, targetPath: string): Promise<void> {
+  return invoke('save_attachment_to_path', { attachmentId, targetPath })
+}
+
+/**
+ * 获取附件信息（含下载状态）
+ */
+export async function getAttachmentInfo(attachmentId: string): Promise<AttachmentInfoWithStatus> {
+  const result = await invoke<AttachmentInfoWithStatus>('get_attachment_info', { attachmentId })
+  return result
+}
+
+/**
+ * 获取邮件附件列表（含下载状态）
+ */
+export async function getAttachmentsWithStatus(emailId: string): Promise<AttachmentInfoWithStatus[]> {
+  const result = await invoke<AttachmentInfoWithStatus[]>('get_attachments_with_status', { emailId })
+  return result
+}
+
+/**
+ * 获取缓存统计信息
+ */
+export async function getCacheStats(): Promise<CacheStats> {
+  return invoke<CacheStats>('get_attachment_cache_stats')
+}
+
+/**
+ * 清空附件缓存
+ */
+export async function clearCache(): Promise<void> {
+  return invoke('clear_attachment_cache')
+}
+
+/**
+ * 打开缓存目录
+ */
+export async function openCacheDirectory(): Promise<void> {
+  return invoke('open_attachment_cache_directory')
 }

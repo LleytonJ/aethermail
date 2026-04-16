@@ -59,7 +59,9 @@ impl Database {
                 mime_type TEXT NOT NULL,
                 size INTEGER NOT NULL,
                 content_id TEXT,
-                content BLOB,
+                imap_section TEXT,
+                is_downloaded INTEGER NOT NULL DEFAULT 0,
+                local_path TEXT,
                 FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE
             );
 
@@ -80,8 +82,8 @@ impl Database {
 
     /// 运行数据库迁移，确保存量数据兼容
     async fn run_migrations(&self) -> Result<(), String> {
-        // 检查 is_phishing 字段是否存在
-        let columns: Vec<String> = sqlx::query("PRAGMA table_info(emails)")
+        // 检查 emails 表字段
+        let email_columns: Vec<String> = sqlx::query("PRAGMA table_info(emails)")
             .fetch_all(&self.pool)
             .await
             .map_err(|e| format!("获取表结构失败: {}", e))?
@@ -90,7 +92,7 @@ impl Database {
             .collect();
 
         // 如果 is_phishing 字段不存在，添加它
-        if !columns.contains(&"is_phishing".to_string()) {
+        if !email_columns.contains(&"is_phishing".to_string()) {
             sqlx::query("ALTER TABLE emails ADD COLUMN is_phishing INTEGER NOT NULL DEFAULT 0")
                 .execute(&self.pool)
                 .await
@@ -104,7 +106,7 @@ impl Database {
         }
 
         // 如果 phishing_reasons 字段不存在，添加它
-        if !columns.contains(&"phishing_reasons".to_string()) {
+        if !email_columns.contains(&"phishing_reasons".to_string()) {
             sqlx::query("ALTER TABLE emails ADD COLUMN phishing_reasons TEXT")
                 .execute(&self.pool)
                 .await
@@ -112,7 +114,7 @@ impl Database {
         }
 
         // 如果 user_overridden 字段不存在，添加它
-        if !columns.contains(&"user_overridden".to_string()) {
+        if !email_columns.contains(&"user_overridden".to_string()) {
             sqlx::query("ALTER TABLE emails ADD COLUMN user_overridden INTEGER NOT NULL DEFAULT 0")
                 .execute(&self.pool)
                 .await
@@ -120,7 +122,7 @@ impl Database {
         }
 
         // 如果是新数据库（字段已存在于 CREATE TABLE），确保索引存在
-        if columns.contains(&"is_phishing".to_string()) {
+        if email_columns.contains(&"is_phishing".to_string()) {
             // 检查索引是否存在
             let indexes: Vec<String> = sqlx::query("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='emails'")
                 .fetch_all(&self.pool)
@@ -136,6 +138,42 @@ impl Database {
                     .await
                     .map_err(|e| format!("创建钓鱼索引失败: {}", e))?;
             }
+        }
+
+        // 检查 attachments 表字段
+        let att_columns: Vec<String> = sqlx::query("PRAGMA table_info(attachments)")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| format!("获取 attachments 表结构失败: {}", e))?
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect();
+
+        // 附件懒加载迁移：如果存在 content 列但不存在新字段，需要迁移
+        if att_columns.contains(&"content".to_string()) {
+            // 添加新字段（如果不存在）
+            if !att_columns.contains(&"imap_section".to_string()) {
+                sqlx::query("ALTER TABLE attachments ADD COLUMN imap_section TEXT")
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| format!("添加 imap_section 字段失败: {}", e))?;
+            }
+            if !att_columns.contains(&"is_downloaded".to_string()) {
+                sqlx::query("ALTER TABLE attachments ADD COLUMN is_downloaded INTEGER NOT NULL DEFAULT 0")
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| format!("添加 is_downloaded 字段失败: {}", e))?;
+            }
+            if !att_columns.contains(&"local_path".to_string()) {
+                sqlx::query("ALTER TABLE attachments ADD COLUMN local_path TEXT")
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| format!("添加 local_path 字段失败: {}", e))?;
+            }
+
+            // 注意：不删除 content 列，SQLite 不支持 DROP COLUMN
+            // 但新代码将不再使用 content 字段
+            // 存量数据迁移将在 Task 1.3 中实现（需要 app_handle 获取缓存路径）
         }
 
         Ok(())
@@ -309,8 +347,8 @@ impl Database {
         sqlx::query(
             r#"
             INSERT OR REPLACE INTO attachments
-            (id, email_id, filename, mime_type, size, content_id, content)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (id, email_id, filename, mime_type, size, content_id, imap_section, is_downloaded, local_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&attachment.id)
@@ -319,7 +357,9 @@ impl Database {
         .bind(&attachment.mime_type)
         .bind(attachment.size)
         .bind(&attachment.content_id)
-        .bind(&attachment.content)
+        .bind(&attachment.imap_section)
+        .bind(attachment.is_downloaded as i32)
+        .bind(&attachment.local_path)
         .execute(&self.pool)
         .await
         .map_err(|e| format!("保存附件失败: {}", e))?;
@@ -330,7 +370,7 @@ impl Database {
     /// Get attachments for an email
     pub async fn get_attachments(&self, email_id: &str) -> Result<Vec<DbAttachment>, String> {
         let rows = sqlx::query(
-            "SELECT id, email_id, filename, mime_type, size, content_id, content FROM attachments WHERE email_id = ?"
+            "SELECT id, email_id, filename, mime_type, size, content_id, imap_section, is_downloaded, local_path FROM attachments WHERE email_id = ?"
         )
         .bind(email_id)
         .fetch_all(&self.pool)
@@ -346,9 +386,56 @@ impl Database {
                 mime_type: row.get("mime_type"),
                 size: row.get("size"),
                 content_id: row.get("content_id"),
-                content: row.get("content"),
+                imap_section: row.get("imap_section"),
+                is_downloaded: row.get::<i32, _>("is_downloaded") == 1,
+                local_path: row.get("local_path"),
             })
             .collect())
+    }
+
+    /// Get attachment by ID
+    pub async fn get_attachment_by_id(&self, id: &str) -> Result<Option<DbAttachment>, String> {
+        let row = sqlx::query(
+            "SELECT id, email_id, filename, mime_type, size, content_id, imap_section, is_downloaded, local_path FROM attachments WHERE id = ?"
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| format!("获取附件失败: {}", e))?;
+
+        Ok(row.map(|row| DbAttachment {
+            id: row.get("id"),
+            email_id: row.get("email_id"),
+            filename: row.get("filename"),
+            mime_type: row.get("mime_type"),
+            size: row.get("size"),
+            content_id: row.get("content_id"),
+            imap_section: row.get("imap_section"),
+            is_downloaded: row.get::<i32, _>("is_downloaded") == 1,
+            local_path: row.get("local_path"),
+        }))
+    }
+
+    /// Update attachment downloaded status and local path
+    pub async fn update_attachment_downloaded(&self, id: &str, local_path: &str) -> Result<(), String> {
+        sqlx::query("UPDATE attachments SET is_downloaded = 1, local_path = ? WHERE id = ?")
+            .bind(local_path)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| format!("更新附件下载状态失败: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Mark all attachments as not downloaded (for cache clear)
+    pub async fn mark_all_attachments_not_downloaded(&self) -> Result<(), String> {
+        sqlx::query("UPDATE attachments SET is_downloaded = 0, local_path = NULL")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| format!("重置附件下载状态失败: {}", e))?;
+
+        Ok(())
     }
 
     /// Get unread count for an account (excluding phishing emails)

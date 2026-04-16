@@ -91,6 +91,14 @@ pub fn run() {
             commands::get_phishing_emails,
             commands::get_phishing_count,
             commands::get_phishing_unread_count,
+            // Attachment commands (懒加载)
+            commands::download_attachment,
+            commands::save_attachment_to_path,
+            commands::get_attachment_info,
+            commands::get_attachments_with_status,
+            commands::get_attachment_cache_stats,
+            commands::clear_attachment_cache,
+            commands::open_attachment_cache_directory,
         ])
         .setup(|app| {
             // Initialize database

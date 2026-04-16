@@ -18,6 +18,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "futures",
+ "imap-proto",
  "lettre",
  "log",
  "mail-parser",

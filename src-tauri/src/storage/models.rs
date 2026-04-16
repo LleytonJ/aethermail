@@ -49,5 +49,11 @@ pub struct DbAttachment {
     pub mime_type: String,
     pub size: i64,
     pub content_id: Option<String>,
-    pub content: Option<Vec<u8>>,
+    /// IMAP MIME section 编号 (如 "2", "3", "2.1")
+    pub imap_section: Option<String>,
+    /// 是否已下载到本地缓存
+    #[serde(default)]
+    pub is_downloaded: bool,
+    /// 本地缓存文件路径
+    pub local_path: Option<String>,
 }

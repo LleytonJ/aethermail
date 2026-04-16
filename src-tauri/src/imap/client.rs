@@ -263,6 +263,153 @@ impl ImapSession {
         })
     }
 
+    /// Fetch MIME structure (BODYSTRUCTURE) for an email by UID
+    /// Returns the MIME tree structure with section numbers
+    pub async fn fetch_structure(&mut self, uid: u32) -> Result<EmailStructure, String> {
+        // Fetch BODYSTRUCTURE
+        let body_structure_data = match self {
+            ImapSession::Tls(session) => {
+                let fetch_stream = session
+                    .uid_fetch(format!("{}", uid), "BODYSTRUCTURE")
+                    .await
+                    .map_err(|e| format!("UID FETCH BODYSTRUCTURE 失败: {:?}", e))?;
+
+                let fetches: Vec<_> = fetch_stream
+                    .collect::<Vec<Result<_, _>>>()
+                    .await;
+
+                fetches
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| "未找到邮件".to_string())?
+                    .map_err(|e| format!("FETCH 错误: {:?}", e))?
+            }
+            ImapSession::Plain(session) => {
+                let fetch_stream = session
+                    .uid_fetch(format!("{}", uid), "BODYSTRUCTURE")
+                    .await
+                    .map_err(|e| format!("UID FETCH BODYSTRUCTURE 失败: {:?}", e))?;
+
+                let fetches: Vec<_> = fetch_stream
+                    .collect::<Vec<Result<_, _>>>()
+                    .await;
+
+                fetches
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| "未找到邮件".to_string())?
+                    .map_err(|e| format!("FETCH 错误: {:?}", e))?
+            }
+        };
+
+        // Parse BODYSTRUCTURE into EmailStructure
+        let structure = parse_bodystructure(&body_structure_data);
+
+        Ok(structure)
+    }
+
+    /// Fetch only the body text (first MIME part) without attachments
+    /// Uses BODY.PEEK[1] to avoid setting Seen flag
+    pub async fn fetch_body_only(&mut self, uid: u32) -> Result<(Option<String>, Option<String>), String> {
+        // First get structure to find body sections
+        let structure = self.fetch_structure(uid).await?;
+
+        // Find text/plain and text/html parts
+        let text_section = structure.parts.iter()
+            .find(|p| p.mime_type == "text/plain" && !p.is_attachment)
+            .map(|p| p.section.clone());
+
+        let html_section = structure.parts.iter()
+            .find(|p| p.mime_type == "text/html" && !p.is_attachment)
+            .map(|p| p.section.clone());
+
+        let mut body_text: Option<String> = None;
+        let mut body_html: Option<String> = None;
+
+        // Fetch text body if section exists
+        if let Some(section) = text_section {
+            let content = self.fetch_section(uid, &section, true).await?;
+            body_text = Some(String::from_utf8_lossy(&content).to_string());
+        }
+
+        // Fetch HTML body if section exists
+        if let Some(section) = html_section {
+            let content = self.fetch_section(uid, &section, true).await?;
+            body_html = Some(String::from_utf8_lossy(&content).to_string());
+        }
+
+        // If no specific body sections found, use section 1 as fallback
+        if body_text.is_none() && body_html.is_none() {
+            let content = self.fetch_section(uid, "1", true).await?;
+            body_text = Some(String::from_utf8_lossy(&content).to_string());
+        }
+
+        Ok((body_text, body_html))
+    }
+
+    /// Fetch a specific MIME section
+    /// Use PEEK to avoid setting Seen flag if peek=true
+    pub async fn fetch_section(&mut self, uid: u32, section: &str, peek: bool) -> Result<Vec<u8>, String> {
+        let fetch_command = if peek {
+            format!("BODY.PEEK[{}]", section)
+        } else {
+            format!("BODY[{}]", section)
+        };
+
+        let body_bytes = match self {
+            ImapSession::Tls(session) => {
+                let fetch_stream = session
+                    .uid_fetch(format!("{}", uid), &fetch_command)
+                    .await
+                    .map_err(|e| format!("UID FETCH {} 失败: {:?}", fetch_command, e))?;
+
+                let fetches: Vec<_> = fetch_stream
+                    .collect::<Vec<Result<_, _>>>()
+                    .await;
+
+                let fetch = fetches
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| "未找到邮件部分".to_string())?
+                    .map_err(|e| format!("FETCH 错误: {:?}", e))?;
+
+                fetch
+                    .body()
+                    .ok_or_else(|| "邮件部分内容为空".to_string())?
+                    .to_vec()
+            }
+            ImapSession::Plain(session) => {
+                let fetch_stream = session
+                    .uid_fetch(format!("{}", uid), &fetch_command)
+                    .await
+                    .map_err(|e| format!("UID FETCH {} 失败: {:?}", fetch_command, e))?;
+
+                let fetches: Vec<_> = fetch_stream
+                    .collect::<Vec<Result<_, _>>>()
+                    .await;
+
+                let fetch = fetches
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| "未找到邮件部分".to_string())?
+                    .map_err(|e| format!("FETCH 错误: {:?}", e))?;
+
+                fetch
+                    .body()
+                    .ok_or_else(|| "邮件部分内容为空".to_string())?
+                    .to_vec()
+            }
+        };
+
+        Ok(body_bytes)
+    }
+
+    /// Fetch attachment content by section
+    /// This downloads the actual attachment data
+    pub async fn fetch_attachment_section(&mut self, uid: u32, section: &str) -> Result<Vec<u8>, String> {
+        self.fetch_section(uid, section, false).await
+    }
+
     /// Logout and close connection
     pub async fn logout(&mut self) -> Result<(), String> {
         match self {
@@ -277,5 +424,77 @@ impl ImapSession {
         };
 
         Ok(())
+    }
+}
+
+/// Parse BODYSTRUCTURE response into EmailStructure
+fn parse_bodystructure(fetch: &async_imap::types::Fetch) -> EmailStructure {
+    let mut parts = Vec::new();
+
+    if let Some(bs) = fetch.bodystructure() {
+        parse_mime_parts_recursive(bs, "", &mut parts);
+    }
+
+    EmailStructure { parts }
+}
+
+/// Recursively parse MIME parts from BODYSTRUCTURE
+fn parse_mime_parts_recursive(bs: &imap_proto::types::BodyStructure<'_>, parent_section: &str, parts: &mut Vec<MimePart>) {
+    match bs {
+        imap_proto::types::BodyStructure::Multipart { common: _, bodies, .. } => {
+            // multipart: recursively process child parts
+            for (i, child) in bodies.iter().enumerate() {
+                let section = if parent_section.is_empty() {
+                    format!("{}", i + 1)
+                } else {
+                    format!("{}.{}", parent_section, i + 1)
+                };
+                parse_mime_parts_recursive(child, &section, parts);
+            }
+        }
+        // Single part types: Basic, Text, Message
+        imap_proto::types::BodyStructure::Basic { common, other, .. }
+        | imap_proto::types::BodyStructure::Text { common, other, .. }
+        | imap_proto::types::BodyStructure::Message { common, other, .. } => {
+            // Get MIME type from common.ty
+            let mime_type = format!("{}/{}", common.ty.ty.as_ref(), common.ty.subtype.as_ref());
+
+            // Determine if this is an attachment from disposition
+            let is_attachment = common.disposition.as_ref()
+                .map(|d: &imap_proto::types::ContentDisposition| d.ty.as_ref() == "attachment")
+                .unwrap_or(false);
+
+            // Check for filename in params (BodyParams is Option<Vec<(Cow, Cow)>)
+            let filename_from_params = common.ty.params.as_ref()
+                .and_then(|params| params.iter()
+                    .find(|(key, _)| key.as_ref() == "filename")
+                    .map(|(_, value)| value.as_ref().to_string()));
+
+            // Or in disposition params
+            let filename_from_disposition = common.disposition.as_ref()
+                .and_then(|d| d.params.as_ref()
+                    .and_then(|params| params.iter()
+                        .find(|(key, _)| key.as_ref() == "filename")
+                        .map(|(_, value)| value.as_ref().to_string())));
+
+            // Get filename
+            let filename = filename_from_params.or(filename_from_disposition);
+
+            // If has filename and not text body, consider as attachment
+            let has_filename = filename.is_some();
+            let content_id = other.id.as_ref().map(|s| s.as_ref().to_string());
+            let final_is_attachment = is_attachment ||
+                (has_filename && !mime_type.starts_with("text/") && content_id.is_none());
+
+            parts.push(MimePart {
+                section: parent_section.to_string(),
+                mime_type,
+                filename,
+                size: other.octets as u64,
+                content_id,
+                is_attachment: final_is_attachment,
+                children: Vec::new(),
+            });
+        }
     }
 }

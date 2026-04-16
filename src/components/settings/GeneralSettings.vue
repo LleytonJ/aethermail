@@ -1,10 +1,10 @@
 <template>
   <div class="space-y-6">
-    <p class="text-sm text-text-secondary">
-      通用设置功能即将推出。
-    </p>
+    <!-- 附件缓存管理 -->
+    <CacheSettings />
   </div>
 </template>
 
 <script setup lang="ts">
+import CacheSettings from '@/components/settings/CacheSettings.vue'
 </script>
