@@ -43,7 +43,7 @@
     </div>
 
     <!-- 邮件列表 -->
-    <div class="flex-1 overflow-y-auto hide-scrollbar">
+    <div class="flex-1 overflow-y-auto">
       <!-- 加载状态 -->
       <div v-if="store.loading" class="p-2 space-y-1">
         <Skeleton v-for="i in 5" :key="i" height="56px" />

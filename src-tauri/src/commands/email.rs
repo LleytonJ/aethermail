@@ -568,10 +568,8 @@ fn parse_email(raw_content: &str, uidl: &str) -> ParsedEmail {
             _ => raw_body_text, // 其他情况保持原样
         };
 
-        result.body_html = raw_body_html;
-
-        // Attachments
-        let attachments: Vec<EmailAttachment> = msg
+        // Attachments - 收集所有附件（包括内嵌图片）
+        let all_attachments: Vec<EmailAttachment> = msg
             .attachments()
             .filter_map(|att| {
                 let mime_type = att.content_type()
@@ -595,8 +593,82 @@ fn parse_email(raw_content: &str, uidl: &str) -> ParsedEmail {
             })
             .collect();
 
-        result.has_attachments = !attachments.is_empty();
-        result.attachments = attachments;
+        result.has_attachments = !all_attachments.is_empty();
+
+        // 先收集 HTML 中被引用的 cid（在替换前检查）
+        let referenced_cids: Vec<String> = if let Some(html) = &raw_body_html {
+            all_attachments
+                .iter()
+                .filter_map(|att| att.content_id.clone())
+                .filter(|cid| {
+                    // 检查原始 HTML 中是否有 cid:xxx 或 cid=<xxx> 引用
+                    html.contains(&format!("cid:{}", cid)) ||
+                    html.contains(&format!("cid:<{}>", cid)) ||
+                    // 也检查不带 cid: 前缀的直接引用（某些邮件格式）
+                    html.contains(&format!("src=\"{}\"", cid)) ||
+                    html.contains(&format!("src='{}'", cid))
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
+        log::info!("[EmailParser] HTML 中引用的内嵌图片 cid: {:?}", referenced_cids);
+
+        // 处理 body_html 中的 cid: 内嵌图片引用
+        // 将 cid:xxx 替换为 data:image/xxx;base64,... 格式
+        result.body_html = raw_body_html.map(|html| {
+            replace_cid_images_with_base64(&html, &all_attachments)
+        });
+
+        // 分离内嵌附件和普通附件
+        // 内嵌附件（有 content_id 且已在 HTML 中被引用）不作为独立附件显示
+        result.attachments = all_attachments
+            .into_iter()
+            .filter(|att| {
+                // 没有 content_id 的附件作为普通附件显示
+                if att.content_id.is_none() {
+                    return true;
+                }
+                // 有 content_id 但未被 HTML 引用的也显示
+                // 已被引用的不显示（已在正文中展示）
+                let cid = att.content_id.as_ref().unwrap();
+                !referenced_cids.contains(cid)
+            })
+            .collect();
+
+        log::info!("[EmailParser] 最终附件数量: {} (过滤了 {} 个内嵌图片)",
+            result.attachments.len(), referenced_cids.len());
+    }
+
+    result
+}
+
+/// 替换 HTML 中的 cid: 图片引用为 base64 data URI
+fn replace_cid_images_with_base64(html: &str, attachments: &[EmailAttachment]) -> String {
+    let mut result = html.to_string();
+
+    for att in attachments {
+        if let Some(content_id) = &att.content_id {
+            if let Some(content) = &att.content {
+                // 构建 data URI
+                let data_uri = format!("data:{};base64,{}", att.mime_type, content);
+
+                // 替换 src="cid:xxx" 和 src='cid:xxx' 格式
+                // 同时处理带 <> 的 content-id 格式（如 cid:<xxx>）
+                let cid_patterns = [
+                    format!("src=\"cid:{}\"", content_id),
+                    format!("src='cid:{}'", content_id),
+                    format!("src=\"cid:<{}>\"", content_id),
+                    format!("src='cid:<{}>'", content_id),
+                ];
+
+                for pattern in cid_patterns {
+                    let replacement = format!("src=\"{}\"", data_uri);
+                    result = result.replace(&pattern, &replacement);
+                }
+            }
+        }
     }
 
     result

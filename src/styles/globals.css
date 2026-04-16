@@ -89,6 +89,12 @@ body {
   box-shadow: var(--glass-shadow), var(--glass-highlight);
 }
 
+/* 实色面板 - 用于滚动区域，无 blur 开销 */
+.solid-panel {
+  background-color: var(--color-bg-secondary);
+  box-shadow: var(--glass-shadow), var(--glass-highlight);
+}
+
 /* 隐藏滚动条 */
 .hide-scrollbar {
   scrollbar-width: none;

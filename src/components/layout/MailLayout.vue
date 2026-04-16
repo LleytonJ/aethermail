@@ -18,7 +18,7 @@
 
       <!-- 中间邮件列表 -->
       <div
-        class="flex-shrink-0 border-r border-border-primary overflow-hidden glass-panel"
+        class="flex-shrink-0 border-r border-border-primary overflow-hidden solid-panel"
         style="width: 320px"
       >
         <EmailList />

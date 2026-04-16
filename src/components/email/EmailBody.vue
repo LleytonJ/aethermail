@@ -69,18 +69,18 @@ const htmlFrame = ref<HTMLIFrameElement | null>(null)
 const showLinkDialog = ref(false)
 const pendingLinkUrl = ref('')
 
-// 邮件内容的基础样式（不覆盖邮件自有样式）
+// 邮件内容的基础样式（浅色背景适配黑色文字邮件）
 const emailStyles = `
   body {
     font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     font-size: 14px;
     line-height: 1.6;
-    background: transparent;
+    background: #f5f7fa;
     margin: 0;
     padding: 16px;
     word-wrap: break-word;
     overflow-wrap: break-word;
-    color: #cbd5e1;
+    color: #1a1a1a;
   }
   /* 只设置图片和表格的基础约束，避免溢出 */
   img { max-width: 100%; height: auto; }
@@ -203,7 +203,7 @@ function handleCancelLink() {
   flex: 1;
   min-height: 200px;
   border: none;
-  background: transparent;
+  background: #f5f7fa;
   display: block;
 }
 
