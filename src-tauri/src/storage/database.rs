@@ -544,4 +544,58 @@ impl Database {
 
         Ok(row.get("count"))
     }
+
+    /// Get all starred emails for an account (excluding phishing emails)
+    pub async fn get_starred_emails(&self, account_id: &str) -> Result<Vec<DbEmail>, String> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, account_id, uidl, from_address, from_name, to_addresses, cc_addresses,
+                   subject, body_text, body_html, date, is_read, is_starred, has_attachment,
+                   is_phishing, phishing_reasons, user_overridden
+            FROM emails
+            WHERE account_id = ? AND is_starred = 1 AND is_phishing = 0
+            ORDER BY date DESC
+            "#,
+        )
+        .bind(account_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| format!("获取星标邮件列表失败: {}", e))?;
+
+        let emails = rows
+            .into_iter()
+            .map(|row| DbEmail {
+                id: row.get("id"),
+                account_id: row.get("account_id"),
+                uidl: row.get("uidl"),
+                from_address: row.get("from_address"),
+                from_name: row.get("from_name"),
+                to_addresses: row.get("to_addresses"),
+                cc_addresses: row.get("cc_addresses"),
+                subject: row.get("subject"),
+                body_text: row.get("body_text"),
+                body_html: row.get("body_html"),
+                date: row.get("date"),
+                is_read: row.get::<i32, _>("is_read") == 1,
+                is_starred: row.get::<i32, _>("is_starred") == 1,
+                has_attachment: row.get::<i32, _>("has_attachment") == 1,
+                is_phishing: row.get::<i32, _>("is_phishing") == 1,
+                phishing_reasons: row.get("phishing_reasons"),
+                user_overridden: row.get::<i32, _>("user_overridden") == 1,
+            })
+            .collect();
+
+        Ok(emails)
+    }
+
+    /// Get starred count for an account (excluding phishing emails)
+    pub async fn get_starred_count(&self, account_id: &str) -> Result<i32, String> {
+        let row = sqlx::query("SELECT COUNT(*) as count FROM emails WHERE account_id = ? AND is_starred = 1 AND is_phishing = 0")
+            .bind(account_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| format!("获取星标邮件数量失败: {}", e))?;
+
+        Ok(row.get("count"))
+    }
 }

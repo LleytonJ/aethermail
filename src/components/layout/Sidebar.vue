@@ -43,16 +43,6 @@
           @click="handleFolderClick(folder.id)"
         />
       </div>
-
-      <!-- 标签分组 -->
-      <div v-if="!uiStore.sidebarCollapsed && tags.length > 0" class="mt-4 px-2">
-        <div class="flex items-center justify-between px-2 py-1.5">
-          <span class="text-xs font-medium text-sidebar-text/50 uppercase tracking-wider">
-            标签
-          </span>
-        </div>
-        <TagList />
-      </div>
     </nav>
 
     <!-- 底部：设置 + 折叠 -->
@@ -93,12 +83,12 @@ import {
   PanelLeftOpen,
   RefreshCw,
   WifiOff,
-  ShieldAlert
+  ShieldAlert,
+  Star
 } from 'lucide-vue-next'
 import FolderItem from './FolderItem.vue'
-import TagList from './TagList.vue'
 import AccountSwitcher from '@/components/accounts/AccountSwitcher.vue'
-import { getPhishingUnreadCount, getPhishingEmails, getUnreadCount } from '@/services/email/emailService'
+import { getPhishingUnreadCount, getPhishingEmails, getUnreadCount, getStarredEmails, getStarredCount } from '@/services/email/emailService'
 
 const emit = defineEmits<{
   addAccount: []
@@ -113,6 +103,8 @@ const composeStore = useComposeStore()
 
 // 钓鱼邮件未读数量
 const phishingUnreadCount = ref(0)
+// 星标邮件数量
+const starredCount = ref(0)
 
 // 加载钓鱼邮件未读数量
 async function loadPhishingUnreadCount() {
@@ -122,6 +114,18 @@ async function loadPhishingUnreadCount() {
       phishingUnreadCount.value = await getPhishingUnreadCount(account.id)
     } catch {
       phishingUnreadCount.value = 0
+    }
+  }
+}
+
+// 加载星标邮件数量
+async function loadStarredCount() {
+  const account = accountStore.activeAccount
+  if (account) {
+    try {
+      starredCount.value = await getStarredCount(account.id)
+    } catch {
+      starredCount.value = 0
     }
   }
 }
@@ -147,6 +151,7 @@ watch(
     // 更新未读数量
     await loadInboxUnreadCount()
     await loadPhishingUnreadCount()
+    await loadStarredCount()
 
     // 自动切换到收件箱并加载邮件
     mailboxStore.setCurrentFolder('inbox')
@@ -180,18 +185,13 @@ watch(
 
 const folders = computed(() => [
   { id: 'inbox', icon: Inbox, label: '收件箱', count: mailboxStore.unreadCount },
+  { id: 'starred', icon: Star, label: '星标邮件', count: starredCount.value },
   // { id: 'sent', icon: Send, label: '已发送', count: 0 },  // 功能未实现
   // { id: 'drafts', icon: FileText, label: '草稿箱', count: 0 },  // 功能未实现
   { id: 'phishing', icon: ShieldAlert, label: '钓鱼邮件', count: phishingUnreadCount.value },
   // { id: 'archive', icon: Archive, label: '归档', count: 0 },  // 功能未实现
   // { id: 'trash', icon: Trash2, label: '已删除', count: 0 }  // 功能未实现
 ])
-
-const tags = [
-  { id: '1', name: '工作', color: '#3b82f6' },
-  { id: '2', name: '个人', color: '#10b981' },
-  { id: '3', name: '重要', color: '#ef4444' }
-]
 
 async function handleFolderClick(folderId: string) {
   mailboxStore.setCurrentFolder(folderId)
@@ -201,6 +201,9 @@ async function handleFolderClick(folderId: string) {
     if (folderId === 'phishing') {
       // 加载钓鱼邮件列表
       await loadPhishingEmails(account.id)
+    } else if (folderId === 'starred') {
+      // 加载星标邮件列表
+      await loadStarredEmails(account.id)
     } else {
       await mailboxStore.loadEmails(account.id, folderId)
     }
@@ -214,6 +217,20 @@ async function loadPhishingEmails(accountId: string) {
     mailboxStore.emails = emails
   } catch (e) {
     console.error('加载钓鱼邮件失败:', e)
+  } finally {
+    mailboxStore.loading = false
+  }
+}
+
+async function loadStarredEmails(accountId: string) {
+  mailboxStore.loading = true
+  try {
+    const emails = await getStarredEmails(accountId)
+    mailboxStore.emails = emails
+    // 更新星标数量
+    starredCount.value = await getStarredCount(accountId)
+  } catch (e) {
+    console.error('加载星标邮件失败:', e)
   } finally {
     mailboxStore.loading = false
   }

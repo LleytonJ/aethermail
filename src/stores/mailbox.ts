@@ -8,6 +8,8 @@ import {
   toggleStar as toggleStarService,
   getUnreadCount,
   getAttachmentsWithStatus,
+  getStarredEmails,
+  getStarredCount,
   type SyncResult
 } from '@/services/email/emailService'
 import { useNotificationStore } from '@/stores/notification'
@@ -57,6 +59,7 @@ export const useMailboxStore = defineStore('mailbox', () => {
   const error = ref<string | null>(null)
   const currentFolder = ref('inbox')
   const unreadCount = ref(0)
+  const starredCount = ref(0)
 
   // Getters
   const selectedEmail = computed(() => {
@@ -125,6 +128,9 @@ export const useMailboxStore = defineStore('mailbox', () => {
       if (folder === 'inbox') {
         emails.value = await getEmails(accountId)
         unreadCount.value = await getUnreadCount(accountId)
+      } else if (folder === 'starred') {
+        emails.value = await getStarredEmails(accountId)
+        starredCount.value = await getStarredCount(accountId)
       } else if (folder === 'sent' || folder === 'drafts' || folder === 'archive' || folder === 'trash') {
         // 这些文件夹功能尚未实现，显示空列表
         emails.value = []
@@ -233,6 +239,7 @@ export const useMailboxStore = defineStore('mailbox', () => {
     error,
     currentFolder,
     unreadCount,
+    starredCount,
     localUnreadCount,
     sync,
     loadEmails,

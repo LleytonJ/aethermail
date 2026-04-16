@@ -229,6 +229,38 @@ export async function getPhishingUnreadCount(accountId: string): Promise<number>
 }
 
 /**
+ * 获取星标邮件列表
+ */
+export async function getStarredEmails(accountId: string): Promise<Email[]> {
+  const result = await invoke<any[]>('get_starred_emails', { accountId })
+
+  // 转换字段名
+  return result.map(e => ({
+    id: e.id,
+    accountId: e.account_id,
+    fromAddress: e.from_address,
+    fromName: e.from_name,
+    toAddresses: e.to_addresses,
+    ccAddresses: e.cc_addresses,
+    subject: e.subject,
+    snippet: e.snippet,
+    date: e.date,
+    isRead: e.is_read,
+    isStarred: e.is_starred,
+    hasAttachment: e.has_attachment,
+    isPhishing: e.is_phishing,
+    phishingReasons: e.phishing_reasons
+  }))
+}
+
+/**
+ * 获取星标邮件数量
+ */
+export async function getStarredCount(accountId: string): Promise<number> {
+  return invoke<number>('get_starred_count', { accountId })
+}
+
+/**
  * 发送邮件结果
  */
 export interface SendEmailResult {

@@ -91,6 +91,9 @@ pub fn run() {
             commands::get_phishing_emails,
             commands::get_phishing_count,
             commands::get_phishing_unread_count,
+            // Starred commands
+            commands::get_starred_emails,
+            commands::get_starred_count,
             // Attachment commands (懒加载)
             commands::download_attachment,
             commands::save_attachment_to_path,

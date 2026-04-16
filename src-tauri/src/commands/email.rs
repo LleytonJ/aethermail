@@ -862,6 +862,55 @@ pub async fn get_phishing_unread_count(account_id: String) -> Result<i32, String
     db.get_phishing_unread_count(&account_id).await
 }
 
+/// Get starred emails for an account
+#[tauri::command]
+pub async fn get_starred_emails(account_id: String) -> Result<Vec<Email>, String> {
+    let db = get_db().await?;
+    let db_emails = db.get_starred_emails(&account_id).await?;
+
+    let emails: Vec<Email> = db_emails
+        .into_iter()
+        .map(|e| {
+            let to_addresses: Vec<String> = serde_json::from_str(&e.to_addresses).unwrap_or_default();
+            let snippet = e.body_text
+                .as_ref()
+                .map(|t| t.chars().take(100).collect())
+                .unwrap_or_default();
+
+            // 解析钓鱼检测原因
+            let phishing_reasons: Option<Vec<String>> = e.phishing_reasons
+                .as_ref()
+                .and_then(|r| serde_json::from_str(r).ok());
+
+            Email {
+                id: e.id,
+                account_id: e.account_id,
+                from_address: e.from_address,
+                from_name: e.from_name,
+                to_addresses,
+                cc_addresses: serde_json::from_str(&e.cc_addresses).unwrap_or_default(),
+                subject: e.subject,
+                snippet,
+                date: e.date,
+                is_read: e.is_read,
+                is_starred: e.is_starred,
+                has_attachment: e.has_attachment,
+                is_phishing: e.is_phishing,
+                phishing_reasons,
+            }
+        })
+        .collect();
+
+    Ok(emails)
+}
+
+/// Get starred email count for an account
+#[tauri::command]
+pub async fn get_starred_count(account_id: String) -> Result<i32, String> {
+    let db = get_db().await?;
+    db.get_starred_count(&account_id).await
+}
+
 /// Send an email
 #[tauri::command]
 pub async fn send_email(

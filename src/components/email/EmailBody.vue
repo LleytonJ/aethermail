@@ -75,7 +75,7 @@ const emailStyles = `
     font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     font-size: 14px;
     line-height: 1.6;
-    background: #f5f7fa;
+    background: #cbd5e1;
     margin: 0;
     padding: 16px;
     word-wrap: break-word;
@@ -203,7 +203,7 @@ function handleCancelLink() {
   flex: 1;
   min-height: 200px;
   border: none;
-  background: #f5f7fa;
+  background: #cbd5e1;
   display: block;
 }
 
