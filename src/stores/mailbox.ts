@@ -10,6 +10,10 @@ import {
   getAttachmentsWithStatus,
   getStarredEmails,
   getStarredCount,
+  moveToTrash as moveToTrashService,
+  getTrashEmails,
+  restoreEmail as restoreEmailService,
+  permanentDelete as permanentDeleteService,
   type SyncResult
 } from '@/services/email/emailService'
 import { useNotificationStore } from '@/stores/notification'
@@ -131,7 +135,9 @@ export const useMailboxStore = defineStore('mailbox', () => {
       } else if (folder === 'starred') {
         emails.value = await getStarredEmails(accountId)
         starredCount.value = await getStarredCount(accountId)
-      } else if (folder === 'sent' || folder === 'drafts' || folder === 'archive' || folder === 'trash') {
+      } else if (folder === 'trash') {
+        emails.value = await getTrashEmails(accountId)
+      } else if (folder === 'sent' || folder === 'drafts' || folder === 'archive') {
         // 这些文件夹功能尚未实现，显示空列表
         emails.value = []
       } else {
@@ -207,6 +213,79 @@ export const useMailboxStore = defineStore('mailbox', () => {
     }
   }
 
+  // 移动邮件到回收站（软删除）
+  async function moveToTrash(id: string) {
+    const email = emails.value.find(e => e.id === id)
+    if (!email) return
+
+    try {
+      await moveToTrashService(id)
+
+      // 从列表中移除邮件
+      emails.value = emails.value.filter(e => e.id !== id)
+
+      // 如果删除的是当前选中的邮件，清空选中状态
+      if (selectedEmailId.value === id) {
+        selectedEmailId.value = null
+      }
+
+      // 更新未读计数（如果删除的是未读邮件）
+      if (!email.isRead && email.accountId) {
+        unreadCount.value = await getUnreadCount(email.accountId)
+      }
+
+      // 更新星标计数（如果删除的是星标邮件）
+      if (email.isStarred && email.accountId) {
+        starredCount.value = await getStarredCount(email.accountId)
+      }
+    } catch (e) {
+      console.error('Failed to move to trash:', e)
+      throw e
+    }
+  }
+
+  // 从回收站恢复邮件
+  async function restoreEmail(id: string, targetFolder: 'inbox' | 'phishing') {
+    const email = emails.value.find(e => e.id === id)
+    if (!email) return
+
+    try {
+      await restoreEmailService(id, targetFolder)
+
+      // 从回收站列表中移除邮件
+      emails.value = emails.value.filter(e => e.id !== id)
+
+      // 清空选中状态
+      if (selectedEmailId.value === id) {
+        selectedEmailId.value = null
+      }
+    } catch (e) {
+      console.error('Failed to restore email:', e)
+      throw e
+    }
+  }
+
+  // 永久删除邮件（从回收站）
+  async function permanentDelete(id: string) {
+    const email = emails.value.find(e => e.id === id)
+    if (!email) return
+
+    try {
+      await permanentDeleteService(id)
+
+      // 从列表中移除邮件
+      emails.value = emails.value.filter(e => e.id !== id)
+
+      // 清空选中状态
+      if (selectedEmailId.value === id) {
+        selectedEmailId.value = null
+      }
+    } catch (e) {
+      console.error('Failed to permanently delete email:', e)
+      throw e
+    }
+  }
+
   function clearSelection() {
     selectedEmailId.value = null
   }
@@ -246,6 +325,9 @@ export const useMailboxStore = defineStore('mailbox', () => {
     selectEmail,
     markAsRead,
     toggleStar,
+    moveToTrash,
+    restoreEmail,
+    permanentDelete,
     clearSelection,
     setCurrentFolder,
     clearError,

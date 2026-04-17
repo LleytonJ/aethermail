@@ -173,6 +173,68 @@ export async function deleteAccountEmails(accountId: string): Promise<void> {
 }
 
 /**
+ * 删除单封邮件
+ */
+export async function deleteEmail(id: string): Promise<void> {
+  return invoke('delete_email', { id })
+}
+
+// ==================== 回收站功能 ====================
+
+/**
+ * 移动邮件到回收站
+ */
+export async function moveToTrash(id: string): Promise<void> {
+  return invoke('move_to_trash', { id })
+}
+
+/**
+ * 获取回收站邮件列表
+ */
+export async function getTrashEmails(accountId: string): Promise<Email[]> {
+  const result = await invoke<any[]>('get_trash_emails', { accountId })
+
+  // 转换字段名
+  return result.map(e => ({
+    id: e.id,
+    accountId: e.account_id,
+    fromAddress: e.from_address,
+    fromName: e.from_name,
+    toAddresses: e.to_addresses,
+    ccAddresses: e.cc_addresses,
+    subject: e.subject,
+    snippet: e.snippet,
+    date: e.date,
+    isRead: e.is_read,
+    isStarred: e.is_starred,
+    hasAttachment: e.has_attachment,
+    isPhishing: e.is_phishing,
+    phishingReasons: e.phishing_reasons
+  }))
+}
+
+/**
+ * 获取回收站邮件数量
+ */
+export async function getTrashCount(accountId: string): Promise<number> {
+  return invoke<number>('get_trash_count', { accountId })
+}
+
+/**
+ * 恢复邮件（到收件箱或钓鱼邮件箱）
+ */
+export async function restoreEmail(id: string, targetFolder: 'inbox' | 'phishing'): Promise<void> {
+  return invoke('restore_email', { id, targetFolder })
+}
+
+/**
+ * 永久删除邮件
+ */
+export async function permanentDelete(id: string): Promise<void> {
+  return invoke('permanent_delete', { id })
+}
+
+/**
  * 更新邮件钓鱼状态
  */
 export async function updatePhishingStatus(

@@ -176,6 +176,20 @@ impl Database {
             // 存量数据迁移将在 Task 1.3 中实现（需要 app_handle 获取缓存路径）
         }
 
+        // 回收站功能迁移：添加 deleted_at 字段
+        if !email_columns.contains(&"deleted_at".to_string()) {
+            sqlx::query("ALTER TABLE emails ADD COLUMN deleted_at INTEGER DEFAULT NULL")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| format!("添加 deleted_at 字段失败: {}", e))?;
+
+            // 创建 deleted_at 索引（用于回收站查询）
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_emails_deleted_at ON emails(deleted_at)")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| format!("创建 deleted_at 索引失败: {}", e))?;
+        }
+
         Ok(())
     }
 
@@ -186,8 +200,8 @@ impl Database {
             INSERT OR REPLACE INTO emails
             (id, account_id, uidl, from_address, from_name, to_addresses, cc_addresses,
              subject, body_text, body_html, date, is_read, is_starred, has_attachment,
-             is_phishing, phishing_reasons, user_overridden)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             is_phishing, phishing_reasons, user_overridden, deleted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&email.id)
@@ -207,6 +221,7 @@ impl Database {
         .bind(email.is_phishing as i32)
         .bind(&email.phishing_reasons)
         .bind(email.user_overridden as i32)
+        .bind(email.deleted_at)
         .execute(&self.pool)
         .await
         .map_err(|e| format!("保存邮件失败: {}", e))?;
@@ -220,9 +235,9 @@ impl Database {
             r#"
             SELECT id, account_id, uidl, from_address, from_name, to_addresses, cc_addresses,
                    subject, body_text, body_html, date, is_read, is_starred, has_attachment,
-                   is_phishing, phishing_reasons, user_overridden
+                   is_phishing, phishing_reasons, user_overridden, deleted_at
             FROM emails
-            WHERE account_id = ? AND is_phishing = 0
+            WHERE account_id = ? AND is_phishing = 0 AND deleted_at IS NULL
             ORDER BY date DESC
             "#,
         )
@@ -251,6 +266,7 @@ impl Database {
                 is_phishing: row.get::<i32, _>("is_phishing") == 1,
                 phishing_reasons: row.get("phishing_reasons"),
                 user_overridden: row.get::<i32, _>("user_overridden") == 1,
+                deleted_at: row.get("deleted_at"),
             })
             .collect();
 
@@ -263,7 +279,7 @@ impl Database {
             r#"
             SELECT id, account_id, uidl, from_address, from_name, to_addresses, cc_addresses,
                    subject, body_text, body_html, date, is_read, is_starred, has_attachment,
-                   is_phishing, phishing_reasons, user_overridden
+                   is_phishing, phishing_reasons, user_overridden, deleted_at
             FROM emails
             WHERE id = ?
             "#,
@@ -291,6 +307,7 @@ impl Database {
             is_phishing: row.get::<i32, _>("is_phishing") == 1,
             phishing_reasons: row.get("phishing_reasons"),
             user_overridden: row.get::<i32, _>("user_overridden") == 1,
+            deleted_at: row.get("deleted_at"),
         }))
     }
 
@@ -438,9 +455,9 @@ impl Database {
         Ok(())
     }
 
-    /// Get unread count for an account (excluding phishing emails)
+    /// Get unread count for an account (excluding phishing emails and deleted emails)
     pub async fn get_unread_count(&self, account_id: &str) -> Result<i32, String> {
-        let row = sqlx::query("SELECT COUNT(*) as count FROM emails WHERE account_id = ? AND is_read = 0 AND is_phishing = 0")
+        let row = sqlx::query("SELECT COUNT(*) as count FROM emails WHERE account_id = ? AND is_read = 0 AND is_phishing = 0 AND deleted_at IS NULL")
             .bind(account_id)
             .fetch_one(&self.pool)
             .await
@@ -486,9 +503,9 @@ impl Database {
             r#"
             SELECT id, account_id, uidl, from_address, from_name, to_addresses, cc_addresses,
                    subject, body_text, body_html, date, is_read, is_starred, has_attachment,
-                   is_phishing, phishing_reasons, user_overridden
+                   is_phishing, phishing_reasons, user_overridden, deleted_at
             FROM emails
-            WHERE account_id = ? AND is_phishing = 1
+            WHERE account_id = ? AND is_phishing = 1 AND deleted_at IS NULL
             ORDER BY date DESC
             "#,
         )
@@ -517,6 +534,7 @@ impl Database {
                 is_phishing: row.get::<i32, _>("is_phishing") == 1,
                 phishing_reasons: row.get("phishing_reasons"),
                 user_overridden: row.get::<i32, _>("user_overridden") == 1,
+                deleted_at: row.get("deleted_at"),
             })
             .collect();
 
@@ -525,7 +543,7 @@ impl Database {
 
     /// Get phishing count for an account
     pub async fn get_phishing_count(&self, account_id: &str) -> Result<i32, String> {
-        let row = sqlx::query("SELECT COUNT(*) as count FROM emails WHERE account_id = ? AND is_phishing = 1")
+        let row = sqlx::query("SELECT COUNT(*) as count FROM emails WHERE account_id = ? AND is_phishing = 1 AND deleted_at IS NULL")
             .bind(account_id)
             .fetch_one(&self.pool)
             .await
@@ -536,7 +554,7 @@ impl Database {
 
     /// Get unread phishing count for an account
     pub async fn get_phishing_unread_count(&self, account_id: &str) -> Result<i32, String> {
-        let row = sqlx::query("SELECT COUNT(*) as count FROM emails WHERE account_id = ? AND is_phishing = 1 AND is_read = 0")
+        let row = sqlx::query("SELECT COUNT(*) as count FROM emails WHERE account_id = ? AND is_phishing = 1 AND is_read = 0 AND deleted_at IS NULL")
             .bind(account_id)
             .fetch_one(&self.pool)
             .await
@@ -551,9 +569,9 @@ impl Database {
             r#"
             SELECT id, account_id, uidl, from_address, from_name, to_addresses, cc_addresses,
                    subject, body_text, body_html, date, is_read, is_starred, has_attachment,
-                   is_phishing, phishing_reasons, user_overridden
+                   is_phishing, phishing_reasons, user_overridden, deleted_at
             FROM emails
-            WHERE account_id = ? AND is_starred = 1 AND is_phishing = 0
+            WHERE account_id = ? AND is_starred = 1 AND is_phishing = 0 AND deleted_at IS NULL
             ORDER BY date DESC
             "#,
         )
@@ -582,20 +600,138 @@ impl Database {
                 is_phishing: row.get::<i32, _>("is_phishing") == 1,
                 phishing_reasons: row.get("phishing_reasons"),
                 user_overridden: row.get::<i32, _>("user_overridden") == 1,
+                deleted_at: row.get("deleted_at"),
             })
             .collect();
 
         Ok(emails)
     }
 
-    /// Get starred count for an account (excluding phishing emails)
+    /// Get starred count for an account (excluding phishing emails and deleted emails)
     pub async fn get_starred_count(&self, account_id: &str) -> Result<i32, String> {
-        let row = sqlx::query("SELECT COUNT(*) as count FROM emails WHERE account_id = ? AND is_starred = 1 AND is_phishing = 0")
+        let row = sqlx::query("SELECT COUNT(*) as count FROM emails WHERE account_id = ? AND is_starred = 1 AND is_phishing = 0 AND deleted_at IS NULL")
             .bind(account_id)
             .fetch_one(&self.pool)
             .await
             .map_err(|e| format!("获取星标邮件数量失败: {}", e))?;
 
         Ok(row.get("count"))
+    }
+
+    /// Delete a single email by ID
+    /// Attachments are automatically deleted via CASCADE
+    pub async fn delete_email(&self, id: &str) -> Result<(), String> {
+        sqlx::query("DELETE FROM emails WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| format!("删除邮件失败: {}", e))?;
+
+        Ok(())
+    }
+
+    // ==================== 回收站功能方法 ====================
+
+    /// Move email to trash (soft delete)
+    pub async fn move_to_trash(&self, id: &str) -> Result<(), String> {
+        let now = chrono::Utc::now().timestamp();
+        sqlx::query("UPDATE emails SET deleted_at = ? WHERE id = ?")
+            .bind(now)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| format!("移动邮件到回收站失败: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Get trash emails for an account
+    pub async fn get_trash_emails(&self, account_id: &str) -> Result<Vec<DbEmail>, String> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, account_id, uidl, from_address, from_name, to_addresses, cc_addresses,
+                   subject, body_text, body_html, date, is_read, is_starred, has_attachment,
+                   is_phishing, phishing_reasons, user_overridden, deleted_at
+            FROM emails
+            WHERE account_id = ? AND deleted_at IS NOT NULL
+            ORDER BY deleted_at DESC
+            "#,
+        )
+        .bind(account_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| format!("获取回收站邮件列表失败: {}", e))?;
+
+        let emails = rows
+            .into_iter()
+            .map(|row| DbEmail {
+                id: row.get("id"),
+                account_id: row.get("account_id"),
+                uidl: row.get("uidl"),
+                from_address: row.get("from_address"),
+                from_name: row.get("from_name"),
+                to_addresses: row.get("to_addresses"),
+                cc_addresses: row.get("cc_addresses"),
+                subject: row.get("subject"),
+                body_text: row.get("body_text"),
+                body_html: row.get("body_html"),
+                date: row.get("date"),
+                is_read: row.get::<i32, _>("is_read") == 1,
+                is_starred: row.get::<i32, _>("is_starred") == 1,
+                has_attachment: row.get::<i32, _>("has_attachment") == 1,
+                is_phishing: row.get::<i32, _>("is_phishing") == 1,
+                phishing_reasons: row.get("phishing_reasons"),
+                user_overridden: row.get::<i32, _>("user_overridden") == 1,
+                deleted_at: row.get("deleted_at"),
+            })
+            .collect();
+
+        Ok(emails)
+    }
+
+    /// Get trash count for an account
+    pub async fn get_trash_count(&self, account_id: &str) -> Result<i32, String> {
+        let row = sqlx::query("SELECT COUNT(*) as count FROM emails WHERE account_id = ? AND deleted_at IS NOT NULL")
+            .bind(account_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| format!("获取回收站邮件数量失败: {}", e))?;
+
+        Ok(row.get("count"))
+    }
+
+    /// Restore email from trash to inbox or phishing folder
+    pub async fn restore_email(&self, id: &str, is_phishing: bool) -> Result<(), String> {
+        sqlx::query("UPDATE emails SET deleted_at = NULL, is_phishing = ? WHERE id = ?")
+            .bind(is_phishing as i32)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| format!("恢复邮件失败: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Permanently delete email from trash
+    pub async fn permanent_delete(&self, id: &str) -> Result<(), String> {
+        sqlx::query("DELETE FROM emails WHERE id = ? AND deleted_at IS NOT NULL")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| format!("永久删除邮件失败: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Cleanup emails deleted more than 30 days ago
+    pub async fn cleanup_expired_trash(&self) -> Result<u64, String> {
+        let threshold = chrono::Utc::now().timestamp() - (30 * 24 * 60 * 60); // 30 days ago
+        let result = sqlx::query("DELETE FROM emails WHERE deleted_at IS NOT NULL AND deleted_at < ?")
+            .bind(threshold)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| format!("清理过期回收站邮件失败: {}", e))?;
+
+        Ok(result.rows_affected())
     }
 }

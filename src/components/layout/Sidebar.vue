@@ -84,11 +84,12 @@ import {
   RefreshCw,
   WifiOff,
   ShieldAlert,
-  Star
+  Star,
+  Trash2
 } from 'lucide-vue-next'
 import FolderItem from './FolderItem.vue'
 import AccountSwitcher from '@/components/accounts/AccountSwitcher.vue'
-import { getPhishingUnreadCount, getPhishingEmails, getUnreadCount, getStarredEmails, getStarredCount } from '@/services/email/emailService'
+import { getPhishingUnreadCount, getPhishingEmails, getUnreadCount, getStarredEmails, getStarredCount, getTrashEmails } from '@/services/email/emailService'
 
 const emit = defineEmits<{
   addAccount: []
@@ -190,7 +191,7 @@ const folders = computed(() => [
   // { id: 'drafts', icon: FileText, label: '草稿箱', count: 0 },  // 功能未实现
   { id: 'phishing', icon: ShieldAlert, label: '钓鱼邮件', count: phishingUnreadCount.value },
   // { id: 'archive', icon: Archive, label: '归档', count: 0 },  // 功能未实现
-  // { id: 'trash', icon: Trash2, label: '已删除', count: 0 }  // 功能未实现
+  { id: 'trash', icon: Trash2, label: '回收站', count: 0 }  // 回收站不显示计数
 ])
 
 async function handleFolderClick(folderId: string) {
@@ -204,6 +205,9 @@ async function handleFolderClick(folderId: string) {
     } else if (folderId === 'starred') {
       // 加载星标邮件列表
       await loadStarredEmails(account.id)
+    } else if (folderId === 'trash') {
+      // 加载回收站邮件列表
+      await loadTrashEmails(account.id)
     } else {
       await mailboxStore.loadEmails(account.id, folderId)
     }
@@ -231,6 +235,18 @@ async function loadStarredEmails(accountId: string) {
     starredCount.value = await getStarredCount(accountId)
   } catch (e) {
     console.error('加载星标邮件失败:', e)
+  } finally {
+    mailboxStore.loading = false
+  }
+}
+
+async function loadTrashEmails(accountId: string) {
+  mailboxStore.loading = true
+  try {
+    const emails = await getTrashEmails(accountId)
+    mailboxStore.emails = emails
+  } catch (e) {
+    console.error('加载回收站邮件失败:', e)
   } finally {
     mailboxStore.loading = false
   }

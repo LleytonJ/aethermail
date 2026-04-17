@@ -13,7 +13,7 @@ use tauri::{
     tray::TrayIconBuilder,
     Manager,
 };
-use commands::email::init_database;
+use commands::email::{init_database, cleanup_expired_trash};
 
 pub fn run() {
     // Windows 平台设置 WebView2 环境变量，降低 GPU 占用
@@ -84,6 +84,7 @@ pub fn run() {
             commands::mark_email_read,
             commands::toggle_email_star,
             commands::delete_account_emails,
+            commands::delete_email,
             commands::get_unread_count,
             commands::send_email,
             // Phishing commands
@@ -94,6 +95,13 @@ pub fn run() {
             // Starred commands
             commands::get_starred_emails,
             commands::get_starred_count,
+            // Trash commands (回收站)
+            commands::move_to_trash,
+            commands::get_trash_emails,
+            commands::get_trash_count,
+            commands::restore_email,
+            commands::permanent_delete,
+            commands::cleanup_expired_trash,
             // Attachment commands (懒加载)
             commands::download_attachment,
             commands::save_attachment_to_path,
@@ -112,6 +120,13 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = init_database(app_data_dir).await {
                     log::error!("初始化数据库失败: {}", e);
+                }
+
+                // 清理过期回收站邮件（30天前删除的）
+                if let Ok(cleaned) = cleanup_expired_trash().await {
+                    if cleaned > 0 {
+                        log::info!("自动清理了 {} 封过期回收站邮件", cleaned);
+                    }
                 }
             });
 

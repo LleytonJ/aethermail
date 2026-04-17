@@ -335,6 +335,7 @@ async fn sync_via_pop3(account: &crate::commands::account::AccountConfig) -> Res
                     is_phishing,
                     phishing_reasons: phishing_reasons_json,
                     user_overridden: false,
+                    deleted_at: None,
                 };
 
                 let email_id = db_email.id.clone();
@@ -458,6 +459,7 @@ async fn sync_via_imap(account: &crate::commands::account::AccountConfig) -> Res
                     is_phishing,
                     phishing_reasons: phishing_reasons_json,
                     user_overridden: false,
+                    deleted_at: None,
                 };
 
                 let email_id = db_email.id.clone();
@@ -780,6 +782,92 @@ pub async fn toggle_email_star(id: String, is_starred: bool) -> Result<(), Strin
 pub async fn delete_account_emails(account_id: String) -> Result<(), String> {
     let db = get_db().await?;
     db.delete_emails_by_account(&account_id).await
+}
+
+/// Delete a single email by ID
+#[tauri::command]
+pub async fn delete_email(id: String) -> Result<(), String> {
+    let db = get_db().await?;
+    db.delete_email(&id).await
+}
+
+// ==================== 回收站功能命令 ====================
+
+/// Move email to trash (soft delete)
+#[tauri::command]
+pub async fn move_to_trash(id: String) -> Result<(), String> {
+    let db = get_db().await?;
+    db.move_to_trash(&id).await
+}
+
+/// Get trash emails for an account
+#[tauri::command]
+pub async fn get_trash_emails(account_id: String) -> Result<Vec<Email>, String> {
+    let db = get_db().await?;
+    let db_emails = db.get_trash_emails(&account_id).await?;
+
+    let emails: Vec<Email> = db_emails
+        .into_iter()
+        .map(|e| {
+            let to_addresses: Vec<String> = serde_json::from_str(&e.to_addresses).unwrap_or_default();
+            let snippet = e.body_text
+                .as_ref()
+                .map(|t| t.chars().take(100).collect())
+                .unwrap_or_default();
+
+            let phishing_reasons: Option<Vec<String>> = e.phishing_reasons
+                .as_ref()
+                .and_then(|r| serde_json::from_str(r).ok());
+
+            Email {
+                id: e.id,
+                account_id: e.account_id,
+                from_address: e.from_address,
+                from_name: e.from_name,
+                to_addresses,
+                cc_addresses: serde_json::from_str(&e.cc_addresses).unwrap_or_default(),
+                subject: e.subject,
+                snippet,
+                date: e.date,
+                is_read: e.is_read,
+                is_starred: e.is_starred,
+                has_attachment: e.has_attachment,
+                is_phishing: e.is_phishing,
+                phishing_reasons,
+            }
+        })
+        .collect();
+
+    Ok(emails)
+}
+
+/// Get trash count for an account
+#[tauri::command]
+pub async fn get_trash_count(account_id: String) -> Result<i32, String> {
+    let db = get_db().await?;
+    db.get_trash_count(&account_id).await
+}
+
+/// Restore email from trash to inbox or phishing folder
+#[tauri::command]
+pub async fn restore_email(id: String, target_folder: String) -> Result<(), String> {
+    let db = get_db().await?;
+    let is_phishing = target_folder == "phishing";
+    db.restore_email(&id, is_phishing).await
+}
+
+/// Permanently delete email from trash
+#[tauri::command]
+pub async fn permanent_delete(id: String) -> Result<(), String> {
+    let db = get_db().await?;
+    db.permanent_delete(&id).await
+}
+
+/// Cleanup expired trash emails (called on app startup)
+#[tauri::command]
+pub async fn cleanup_expired_trash() -> Result<u64, String> {
+    let db = get_db().await?;
+    db.cleanup_expired_trash().await
 }
 
 /// Get unread count

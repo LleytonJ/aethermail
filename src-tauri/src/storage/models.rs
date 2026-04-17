@@ -38,6 +38,9 @@ pub struct DbEmail {
     /// 用户是否手动覆盖了钓鱼判定（移回收件箱后不再重复检测）
     #[serde(default)]
     pub user_overridden: bool,
+    /// 删除时间戳（回收站功能，NULL 表示未删除）
+    #[serde(default)]
+    pub deleted_at: Option<i64>,
 }
 
 /// Attachment stored in database
