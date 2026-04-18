@@ -20,6 +20,11 @@ const router = createRouter({
           component: () => import('@/components/settings/AccountManagement.vue')
         },
         {
+          path: 'contacts',
+          name: 'settings-contacts',
+          component: () => import('@/components/settings/ContactEditor.vue')
+        },
+        {
           path: 'general',
           name: 'settings-general',
           component: () => import('@/components/settings/GeneralSettings.vue')

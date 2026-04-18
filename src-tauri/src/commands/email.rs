@@ -69,7 +69,7 @@ fn get_attachment_cache_path(attachment_id: &str) -> Result<PathBuf, String> {
 }
 
 /// Get database instance
-async fn get_db() -> Result<Database, String> {
+pub async fn get_db() -> Result<Database, String> {
     let db_cell = DB.get_or_init(|| Arc::new(RwLock::new(None)));
     let db_guard = db_cell.read().await;
 

@@ -65,9 +65,22 @@ impl Database {
                 FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS contacts (
+                id TEXT PRIMARY KEY,
+                email TEXT NOT NULL UNIQUE,
+                display_name TEXT,
+                avatar_url TEXT,
+                frequency INTEGER NOT NULL DEFAULT 1,
+                last_contacted_at INTEGER,
+                created_at INTEGER DEFAULT (unixepoch()),
+                updated_at INTEGER DEFAULT (unixepoch())
+            );
+
             CREATE INDEX IF NOT EXISTS idx_emails_account ON emails(account_id);
             CREATE INDEX IF NOT EXISTS idx_emails_date ON emails(date);
             CREATE INDEX IF NOT EXISTS idx_emails_uidl ON emails(account_id, uidl);
+            CREATE INDEX IF NOT EXISTS idx_contacts_email ON contacts(email);
+            CREATE INDEX IF NOT EXISTS idx_contacts_frequency ON contacts(frequency DESC);
             "#,
         )
         .execute(&self.pool)
@@ -190,6 +203,37 @@ impl Database {
                 .map_err(|e| format!("创建 deleted_at 索引失败: {}", e))?;
         }
 
+        // 联系人功能迁移：检查 contacts 表是否存在
+        let tables: Vec<String> = sqlx::query("SELECT name FROM sqlite_master WHERE type='table'")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| format!("获取表列表失败: {}", e))?
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect();
+
+        if !tables.contains(&"contacts".to_string()) {
+            sqlx::query(
+                r#"
+                CREATE TABLE contacts (
+                    id TEXT PRIMARY KEY,
+                    email TEXT NOT NULL UNIQUE,
+                    display_name TEXT,
+                    avatar_url TEXT,
+                    frequency INTEGER NOT NULL DEFAULT 1,
+                    last_contacted_at INTEGER,
+                    created_at INTEGER DEFAULT (unixepoch()),
+                    updated_at INTEGER DEFAULT (unixepoch())
+                );
+                CREATE INDEX idx_contacts_email ON contacts(email);
+                CREATE INDEX idx_contacts_frequency ON contacts(frequency DESC);
+                "#,
+            )
+            .execute(&self.pool)
+            .await
+            .map_err(|e| format!("创建 contacts 表失败: {}", e))?;
+        }
+
         Ok(())
     }
 
@@ -225,6 +269,13 @@ impl Database {
         .execute(&self.pool)
         .await
         .map_err(|e| format!("保存邮件失败: {}", e))?;
+
+        // 自动创建/更新发件人联系人
+        if let Some(from_addr) = &email.from_address {
+            if !from_addr.is_empty() {
+                self.upsert_contact(from_addr, email.from_name.as_deref()).await?;
+            }
+        }
 
         Ok(())
     }
@@ -733,5 +784,168 @@ impl Database {
             .map_err(|e| format!("清理过期回收站邮件失败: {}", e))?;
 
         Ok(result.rows_affected())
+    }
+
+    // ==================== 联系人功能方法 ====================
+
+    /// Upsert a contact - creates new or updates frequency if exists
+    pub async fn upsert_contact(&self, email: &str, display_name: Option<&str>) -> Result<(), String> {
+        let normalized_email = email.to_lowercase();
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().timestamp();
+
+        sqlx::query(
+            r#"
+            INSERT INTO contacts (id, email, display_name, last_contacted_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(email) DO UPDATE SET
+                display_name = COALESCE(?, display_name),
+                frequency = frequency + 1,
+                last_contacted_at = ?,
+                updated_at = ?
+            "#,
+        )
+        .bind(&id)
+        .bind(&normalized_email)
+        .bind(display_name)
+        .bind(now)
+        .bind(now)
+        .bind(now)
+        .bind(display_name)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| format!("保存联系人失败: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Search contacts by email or name prefix for autocomplete
+    pub async fn search_contacts(&self, query: &str, limit: i32) -> Result<Vec<DbContact>, String> {
+        let pattern = format!("%{}%", query.to_lowercase());
+        let rows = sqlx::query(
+            r#"
+            SELECT id, email, display_name, avatar_url, frequency, last_contacted_at, created_at, updated_at
+            FROM contacts
+            WHERE email LIKE ? OR display_name LIKE ?
+            ORDER BY frequency DESC, display_name ASC
+            LIMIT ?
+            "#,
+        )
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| format!("搜索联系人失败: {}", e))?;
+
+        let contacts = rows
+            .into_iter()
+            .map(|row| DbContact {
+                id: row.get("id"),
+                email: row.get("email"),
+                display_name: row.get("display_name"),
+                avatar_url: row.get("avatar_url"),
+                frequency: row.get("frequency"),
+                last_contacted_at: row.get("last_contacted_at"),
+                created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
+            })
+            .collect();
+
+        Ok(contacts)
+    }
+
+    /// Get all contacts ordered by frequency
+    pub async fn get_all_contacts(&self) -> Result<Vec<DbContact>, String> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, email, display_name, avatar_url, frequency, last_contacted_at, created_at, updated_at
+            FROM contacts
+            ORDER BY frequency DESC, display_name ASC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| format!("获取联系人列表失败: {}", e))?;
+
+        let contacts = rows
+            .into_iter()
+            .map(|row| DbContact {
+                id: row.get("id"),
+                email: row.get("email"),
+                display_name: row.get("display_name"),
+                avatar_url: row.get("avatar_url"),
+                frequency: row.get("frequency"),
+                last_contacted_at: row.get("last_contacted_at"),
+                created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
+            })
+            .collect();
+
+        Ok(contacts)
+    }
+
+    /// Get contact by email
+    pub async fn get_contact_by_email(&self, email: &str) -> Result<Option<DbContact>, String> {
+        let normalized_email = email.to_lowercase();
+        let row = sqlx::query(
+            r#"
+            SELECT id, email, display_name, avatar_url, frequency, last_contacted_at, created_at, updated_at
+            FROM contacts
+            WHERE email = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(&normalized_email)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| format!("获取联系人失败: {}", e))?;
+
+        Ok(row.map(|row| DbContact {
+            id: row.get("id"),
+            email: row.get("email"),
+            display_name: row.get("display_name"),
+            avatar_url: row.get("avatar_url"),
+            frequency: row.get("frequency"),
+            last_contacted_at: row.get("last_contacted_at"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+        }))
+    }
+
+    /// Update contact info
+    pub async fn update_contact(&self, id: &str, display_name: Option<&str>, avatar_url: Option<&str>) -> Result<(), String> {
+        let now = chrono::Utc::now().timestamp();
+        sqlx::query(
+            r#"
+            UPDATE contacts SET
+                display_name = ?,
+                avatar_url = ?,
+                updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(display_name)
+        .bind(avatar_url)
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| format!("更新联系人失败: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Delete contact by ID
+    pub async fn delete_contact(&self, id: &str) -> Result<(), String> {
+        sqlx::query("DELETE FROM contacts WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| format!("删除联系人失败: {}", e))?;
+
+        Ok(())
     }
 }

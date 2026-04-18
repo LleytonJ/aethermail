@@ -16,33 +16,24 @@
     <div class="flex-1 overflow-y-auto p-4 space-y-4">
       <!-- 收件人 -->
       <div>
-        <label class="block text-xs font-medium text-text-secondary mb-1">
-          收件人
-        </label>
-        <div class="relative">
-          <input
-            v-model="form.to"
-            type="text"
-            placeholder="recipient@example.com"
-            class="w-full px-3 py-2 bg-bg-secondary border border-border-primary rounded-lg text-sm text-text-primary outline-none focus:border-accent transition-colors"
-            :class="{ 'border-danger': errors.to }"
-          />
-          <p v-if="errors.to" class="text-xs text-danger mt-1">
-            {{ errors.to }}
-          </p>
-        </div>
+        <AddressInput
+          label="收件人"
+          :model-value="form.to"
+          placeholder="输入邮箱地址..."
+          @update:model-value="form.to = $event"
+        />
+        <p v-if="errors.to" class="text-xs text-danger mt-1">
+          {{ errors.to }}
+        </p>
       </div>
 
       <!-- 抄送（可选） -->
       <div>
-        <label class="block text-xs font-medium text-text-secondary mb-1">
-          抄送（可选）
-        </label>
-        <input
-          v-model="form.cc"
-          type="text"
-          placeholder="cc@example.com"
-          class="w-full px-3 py-2 bg-bg-secondary border border-border-primary rounded-lg text-sm text-text-primary outline-none focus:border-accent transition-colors"
+        <AddressInput
+          label="抄送"
+          :model-value="form.cc"
+          placeholder="输入邮箱地址（可选）..."
+          @update:model-value="form.cc = $event"
         />
       </div>
 
@@ -120,6 +111,7 @@ import { X, Send, Loader2 } from 'lucide-vue-next'
 import { useAccountStore } from '@/stores/account'
 import { useNotificationStore } from '@/stores/notification'
 import { sendEmail } from '@/services/email/emailService'
+import AddressInput from '@/components/ui/AddressInput.vue'
 
 interface Props {
   // 回复模式：预填充收件人、主题、引用正文
@@ -145,10 +137,10 @@ const emit = defineEmits<{
 const accountStore = useAccountStore()
 const notificationStore = useNotificationStore()
 
-// 表单状态
+// 表单状态 - 收件人改为数组形式
 const form = ref({
-  to: '',
-  cc: '',
+  to: [] as string[],
+  cc: [] as string[],
   subject: '',
   body: ''
 })
@@ -169,7 +161,7 @@ watch(
   () => props,
   (p) => {
     if (p.replyTo) {
-      form.value.to = p.replyTo.from
+      form.value.to = [p.replyTo.from]
       form.value.subject = p.replyTo.subject.startsWith('Re:')
         ? p.replyTo.subject
         : `Re: ${p.replyTo.subject}`
@@ -195,14 +187,13 @@ function validateForm(): boolean {
   errors.value = { to: '', subject: '', body: '' }
 
   // 验证收件人
-  if (!form.value.to.trim()) {
+  if (form.value.to.length === 0) {
     errors.value.to = '请输入收件人地址'
     return false
   }
 
-  // 验证收件人格式（支持多个邮箱，逗号分隔）
-  const toEmails = form.value.to.split(',').map(e => e.trim())
-  for (const email of toEmails) {
+  // 验证收件人格式
+  for (const email of form.value.to) {
     if (!validateEmail(email)) {
       errors.value.to = `无效的邮箱地址: ${email}`
       return false
@@ -210,13 +201,10 @@ function validateForm(): boolean {
   }
 
   // 验证抄送格式（如果有）
-  if (form.value.cc.trim()) {
-    const ccEmails = form.value.cc.split(',').map(e => e.trim())
-    for (const email of ccEmails) {
-      if (!validateEmail(email)) {
-        errors.value.to = `无效的抄送地址: ${email}`
-        return false
-      }
+  for (const email of form.value.cc) {
+    if (!validateEmail(email)) {
+      errors.value.to = `无效的抄送地址: ${email}`
+      return false
     }
   }
 
@@ -237,7 +225,7 @@ function validateForm(): boolean {
 
 // 是否可以发送
 const canSend = computed(() => {
-  return form.value.to.trim() &&
+  return form.value.to.length > 0 &&
          form.value.subject.trim() &&
          form.value.body.trim()
 })
@@ -256,16 +244,10 @@ async function handleSend() {
   errorMessage.value = ''
 
   try {
-    // 解析收件人地址
-    const toAddresses = form.value.to.split(',').map(e => e.trim())
-    const ccAddresses = form.value.cc.trim()
-      ? form.value.cc.split(',').map(e => e.trim())
-      : null
-
     const result = await sendEmail(
       account.id,
-      toAddresses,
-      ccAddresses,
+      form.value.to,
+      form.value.cc.length > 0 ? form.value.cc : null,
       form.value.subject,
       form.value.body
     )
@@ -293,7 +275,7 @@ async function handleSend() {
 
 // 关闭
 function handleClose() {
-  if (form.value.to || form.value.subject || form.value.body) {
+  if (form.value.to.length > 0 || form.value.subject || form.value.body) {
     if (confirm('您已填写了一些内容，确定要关闭吗？')) {
       emit('close')
     }

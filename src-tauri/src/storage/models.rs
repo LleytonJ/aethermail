@@ -2,6 +2,19 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Contact stored in database
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DbContact {
+    pub id: String,
+    pub email: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub frequency: i32,
+    pub last_contacted_at: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 /// Account stored in database
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DbAccount {

@@ -94,6 +94,18 @@ export const useMailboxStore = defineStore('mailbox', () => {
       // Refresh email list after sync
       await loadEmails(accountId)
 
+      // 如果同步前有选中的邮件，重新加载该邮件的正文
+      // 因为 loadEmails 会替换邮件列表，新对象不包含正文
+      const previousSelectedId = selectedEmailId.value
+      if (previousSelectedId) {
+        // 检查该邮件是否还在新列表中
+        const stillExists = emails.value.some(e => e.id === previousSelectedId)
+        if (stillExists) {
+          // 重新调用 selectEmail 加载正文
+          await selectEmail(previousSelectedId)
+        }
+      }
+
       // Update unread count
       unreadCount.value = await getUnreadCount(accountId)
 

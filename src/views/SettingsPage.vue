@@ -63,13 +63,13 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { ArrowLeft, UserCircle, Settings, Brain } from 'lucide-vue-next'
+import { ArrowLeft, UserCircle, Users, Settings, Brain } from 'lucide-vue-next'
 import type { LucideIcon } from 'lucide-vue-next'
 import { useAccountStore } from '@/stores/account'
 import AddAccount from '@/components/accounts/AddAccount.vue'
 import Notifications from '@/components/common/Notifications.vue'
 
-type SettingsTab = 'accounts' | 'general' | 'ai'
+type SettingsTab = 'accounts' | 'contacts' | 'general' | 'ai'
 
 interface Tab {
   id: SettingsTab
@@ -79,6 +79,7 @@ interface Tab {
 
 const tabs: Tab[] = [
   { id: 'accounts', label: '账户管理', icon: UserCircle },
+  { id: 'contacts', label: '联系人', icon: Users },
   { id: 'general', label: '通用设置', icon: Settings },
   { id: 'ai', label: 'AI 设置', icon: Brain }
 ]
@@ -98,6 +99,8 @@ watch(
       activeTab.value = 'general'
     } else if (path.includes('/settings/ai')) {
       activeTab.value = 'ai'
+    } else if (path.includes('/settings/contacts')) {
+      activeTab.value = 'contacts'
     } else {
       activeTab.value = 'accounts'
     }

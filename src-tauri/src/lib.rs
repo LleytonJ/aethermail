@@ -110,6 +110,12 @@ pub fn run() {
             commands::get_attachment_cache_stats,
             commands::clear_attachment_cache,
             commands::open_attachment_cache_directory,
+            // Contact commands (通讯录)
+            commands::search_contacts,
+            commands::get_all_contacts,
+            commands::get_contact_by_email,
+            commands::update_contact,
+            commands::delete_contact,
         ])
         .setup(|app| {
             // Initialize database
