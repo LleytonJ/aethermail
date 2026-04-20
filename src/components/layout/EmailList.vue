@@ -82,11 +82,14 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useMailboxStore } from '@/stores/mailbox'
+import { useComposeStore } from '@/stores/compose'
+import { getDraftDetail } from '@/services/email/emailService'
 import { Search, Inbox, CheckSquare, RefreshCw, MoreVertical } from 'lucide-vue-next'
 import Skeleton from '../ui/Skeleton.vue'
 import EmailListItem from '../email/EmailListItem.vue'
 
 const store = useMailboxStore()
+const composeStore = useComposeStore()
 const searchQuery = ref('')
 const selectedEmailId = computed(() => store.selectedEmailId)
 
@@ -113,7 +116,56 @@ const emptyMessage = computed(() => {
 })
 
 function handleSelect(emailId: string) {
+  const email = store.emails.find(e => e.id === emailId)
+
+  // 草稿邮件：先获取详情再打开编辑模式
+  if (store.currentFolder === 'drafts' && email) {
+    // 草稿 id 格式是 "draft-{draft_id}"
+    const draftId = email.id.replace('draft-', '')
+    loadDraftAndOpenEditor(draftId, email)
+    return
+  }
+
+  // 其他邮件：正常选择并标记已读
   store.selectEmail(emailId)
   store.markAsRead(emailId)
+}
+
+// 加载草稿详情并打开编辑器
+async function loadDraftAndOpenEditor(draftId: string, email: any) {
+  try {
+    const detail = await getDraftDetail(draftId)
+    if (detail) {
+      composeStore.openDraft(
+        draftId,
+        detail.to_addresses,
+        detail.cc_addresses,
+        detail.subject,
+        detail.body_html,
+        detail.body_text
+      )
+    } else {
+      // 如果获取详情失败，使用列表中的基本信息
+      composeStore.openDraft(
+        draftId,
+        email.toAddresses,
+        email.ccAddresses,
+        email.subject || null,
+        email.bodyHtml || null,
+        email.bodyText || null
+      )
+    }
+  } catch (e) {
+    console.error('获取草稿详情失败:', e)
+    // 使用列表中的基本信息
+    composeStore.openDraft(
+      draftId,
+      email.toAddresses,
+      email.ccAddresses,
+      email.subject || null,
+      email.bodyHtml || null,
+      email.bodyText || null
+    )
+  }
 }
 </script>

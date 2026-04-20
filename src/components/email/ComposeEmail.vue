@@ -93,10 +93,14 @@
     <div class="flex items-center justify-between px-4 py-3 border-t border-border-primary">
       <!-- 发送状态 -->
       <div class="text-xs text-text-muted">
-        <span v-if="sendingState === 'idle'">准备发送</span>
+        <span v-if="sendingState === 'idle' && !isSavingDraft">准备发送</span>
         <span v-else-if="sendingState === 'sending'" class="flex items-center gap-1">
           <Loader2 :size="14" class="animate-spin" />
           正在发送...
+        </span>
+        <span v-else-if="isSavingDraft" class="flex items-center gap-1">
+          <Loader2 :size="14" class="animate-spin" />
+          保存中...
         </span>
         <span v-else-if="sendingState === 'success'" class="text-success">发送成功</span>
         <span v-else-if="sendingState === 'error'" class="text-danger">{{ errorMessage }}</span>
@@ -111,8 +115,16 @@
           取消
         </button>
         <button
+          class="flex items-center gap-1.5 px-3 py-2 text-sm text-text-secondary hover:text-text-primary border border-border-primary rounded-lg hover:bg-bg-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          :disabled="isSavingDraft || sendingState === 'sending'"
+          @click="handleSaveDraft"
+        >
+          <Save :size="14" />
+          保存草稿
+        </button>
+        <button
           class="flex items-center gap-1.5 px-4 py-2 text-sm bg-accent text-white rounded-lg hover:bg-accent-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          :disabled="!canSend || sendingState === 'sending'"
+          :disabled="!canSend || sendingState === 'sending' || isSavingDraft"
           @click="handleSend"
         >
           <Send :size="14" />
@@ -125,10 +137,10 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { X, Send, Loader2 } from 'lucide-vue-next'
+import { X, Send, Loader2, Save } from 'lucide-vue-next'
 import { useAccountStore } from '@/stores/account'
 import { useNotificationStore } from '@/stores/notification'
-import { sendEmail } from '@/services/email/emailService'
+import { sendEmail, createDraft, updateDraft, sendDraft } from '@/services/email/emailService'
 import AddressInput from '@/components/ui/AddressInput.vue'
 import RichTextEditor from '@/components/ui/RichTextEditor.vue'
 
@@ -144,6 +156,15 @@ interface Props {
     subject: string
     body: string
   }
+  // 编辑草稿模式：加载草稿内容
+  draftId?: string
+  draftData?: {
+    toAddresses: string[]
+    ccAddresses: string[]
+    subject: string | null
+    bodyHtml: string | null
+    bodyText: string | null
+  }
 }
 
 const props = defineProps<Props>()
@@ -151,6 +172,7 @@ const props = defineProps<Props>()
 const emit = defineEmits<{
   close: []
   sent: []
+  saved: []
 }>()
 
 const accountStore = useAccountStore()
@@ -164,6 +186,9 @@ const form = ref({
   body: '',
   includeSignature: true
 })
+
+// 草稿 ID（编辑草稿时有值）
+const currentDraftId = ref<string | null>(null)
 
 // 签名开关显示条件
 const showSignatureToggle = computed(() => {
@@ -181,22 +206,39 @@ const errors = ref({
 // 发送状态
 const sendingState = ref<'idle' | 'sending' | 'success' | 'error'>('idle')
 const errorMessage = ref('')
+const isSavingDraft = ref(false)
 
-// 初始化表单（回复或转发）
+// 初始化表单（回复、转发或编辑草稿）
 watch(
-  () => props,
-  (p) => {
-    if (p.replyTo) {
-      form.value.to = [p.replyTo.from]
-      form.value.subject = p.replyTo.subject.startsWith('Re:')
-        ? p.replyTo.subject
-        : `Re: ${p.replyTo.subject}`
-      form.value.body = `\n\n--- 原始邮件 ---\n${p.replyTo.body}`
-    } else if (p.forward) {
-      form.value.subject = p.forward.subject.startsWith('Fwd:')
-        ? p.forward.subject
-        : `Fwd: ${p.forward.subject}`
-      form.value.body = `\n\n--- 转发邮件 ---\n${p.forward.body}`
+  [() => props.draftId, () => props.draftData, () => props.replyTo, () => props.forward],
+  ([draftId, draftData, replyTo, forward]) => {
+    // 编辑草稿模式
+    if (draftId && draftData) {
+      currentDraftId.value = draftId
+      form.value.to = draftData.toAddresses || []
+      form.value.cc = draftData.ccAddresses || []
+      form.value.subject = draftData.subject || ''
+      form.value.body = draftData.bodyHtml || draftData.bodyText || ''
+    } else if (replyTo) {
+      currentDraftId.value = null
+      form.value.to = [replyTo.from]
+      form.value.subject = replyTo.subject.startsWith('Re:')
+        ? replyTo.subject
+        : `Re: ${replyTo.subject}`
+      form.value.body = `\n\n--- 原始邮件 ---\n${replyTo.body}`
+    } else if (forward) {
+      currentDraftId.value = null
+      form.value.subject = forward.subject.startsWith('Fwd:')
+        ? forward.subject
+        : `Fwd: ${forward.subject}`
+      form.value.body = `\n\n--- 转发邮件 ---\n${forward.body}`
+    } else {
+      // 新邮件模式：重置表单
+      currentDraftId.value = null
+      form.value.to = []
+      form.value.cc = []
+      form.value.subject = ''
+      form.value.body = ''
     }
   },
   { immediate: true }
@@ -277,15 +319,23 @@ async function handleSend() {
     : null
 
   try {
-    const result = await sendEmail(
-      account.id,
-      form.value.to,
-      form.value.cc.length > 0 ? form.value.cc : null,
-      form.value.subject,
-      form.value.body, // plain text fallback
-      form.value.body, // HTML body (from rich text editor)
-      signatureHtml
-    )
+    // 区分草稿发送和新邮件发送
+    let result
+    if (currentDraftId.value) {
+      // 发送草稿
+      result = await sendDraft(currentDraftId.value, signatureHtml)
+    } else {
+      // 发送新邮件
+      result = await sendEmail(
+        account.id,
+        form.value.to,
+        form.value.cc.length > 0 ? form.value.cc : null,
+        form.value.subject,
+        form.value.body, // plain text fallback
+        form.value.body, // HTML body (from rich text editor)
+        signatureHtml
+      )
+    }
 
     if (result.success) {
       sendingState.value = 'success'
@@ -305,6 +355,45 @@ async function handleSend() {
     sendingState.value = 'error'
     errorMessage.value = e instanceof Error ? e.message : '发送失败'
     notificationStore.error('发送失败', errorMessage.value)
+  }
+}
+
+// 保存草稿
+async function handleSaveDraft() {
+  const account = accountStore.activeAccount
+  if (!account) {
+    notificationStore.error('保存失败', '没有可用的账户')
+    return
+  }
+
+  isSavingDraft.value = true
+
+  try {
+    const draftData = {
+      accountId: account.id,
+      toAddresses: form.value.to,
+      ccAddresses: form.value.cc,
+      subject: form.value.subject || null,
+      bodyText: form.value.body.replace(/<[^>]*>/g, ''), // 提取纯文本
+      bodyHtml: form.value.body
+    }
+
+    if (currentDraftId.value) {
+      // 更新现有草稿
+      await updateDraft(currentDraftId.value, draftData)
+      notificationStore.success('草稿已保存', '草稿内容已更新')
+    } else {
+      // 创建新草稿
+      const draftId = await createDraft(draftData)
+      currentDraftId.value = draftId
+      notificationStore.success('草稿已保存', '草稿已保存到草稿箱')
+    }
+
+    emit('saved')
+  } catch (e) {
+    notificationStore.error('保存失败', e instanceof Error ? e.message : '保存草稿失败')
+  } finally {
+    isSavingDraft.value = false
   }
 }
 

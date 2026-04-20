@@ -85,11 +85,13 @@ import {
   WifiOff,
   ShieldAlert,
   Star,
-  Trash2
+  Trash2,
+  Send,
+  FileText
 } from 'lucide-vue-next'
 import FolderItem from './FolderItem.vue'
 import AccountSwitcher from '@/components/accounts/AccountSwitcher.vue'
-import { getPhishingUnreadCount, getPhishingEmails, getUnreadCount, getStarredEmails, getStarredCount, getTrashEmails } from '@/services/email/emailService'
+import { getPhishingUnreadCount, getPhishingEmails, getUnreadCount, getStarredEmails, getStarredCount, getTrashEmails, getSentEmails, getSentCount, getDraftEmails, getDraftCount } from '@/services/email/emailService'
 
 const emit = defineEmits<{
   addAccount: []
@@ -131,6 +133,30 @@ async function loadStarredCount() {
   }
 }
 
+// 加载已发送邮件数量
+async function loadSentCount() {
+  const account = accountStore.activeAccount
+  if (account) {
+    try {
+      mailboxStore.sentCount = await getSentCount(account.id)
+    } catch {
+      mailboxStore.sentCount = 0
+    }
+  }
+}
+
+// 加载草稿邮件数量
+async function loadDraftCount() {
+  const account = accountStore.activeAccount
+  if (account) {
+    try {
+      mailboxStore.draftCount = await getDraftCount(account.id)
+    } catch {
+      mailboxStore.draftCount = 0
+    }
+  }
+}
+
 // 加载收件箱未读数量
 async function loadInboxUnreadCount() {
   const account = accountStore.activeAccount
@@ -153,6 +179,8 @@ watch(
     await loadInboxUnreadCount()
     await loadPhishingUnreadCount()
     await loadStarredCount()
+    await loadSentCount()
+    await loadDraftCount()
 
     // 自动切换到收件箱并加载邮件
     mailboxStore.setCurrentFolder('inbox')
@@ -187,10 +215,9 @@ watch(
 const folders = computed(() => [
   { id: 'inbox', icon: Inbox, label: '收件箱', count: mailboxStore.unreadCount },
   { id: 'starred', icon: Star, label: '星标邮件', count: starredCount.value },
-  // { id: 'sent', icon: Send, label: '已发送', count: 0 },  // 功能未实现
-  // { id: 'drafts', icon: FileText, label: '草稿箱', count: 0 },  // 功能未实现
+  { id: 'sent', icon: Send, label: '已发送', count: 0 },  // 已发送不显示计数
+  { id: 'drafts', icon: FileText, label: '草稿箱', count: mailboxStore.draftCount },  // 草稿显示计数作为提醒
   { id: 'phishing', icon: ShieldAlert, label: '钓鱼邮件', count: phishingUnreadCount.value },
-  // { id: 'archive', icon: Archive, label: '归档', count: 0 },  // 功能未实现
   { id: 'trash', icon: Trash2, label: '回收站', count: 0 }  // 回收站不显示计数
 ])
 
@@ -208,6 +235,12 @@ async function handleFolderClick(folderId: string) {
     } else if (folderId === 'trash') {
       // 加载回收站邮件列表
       await loadTrashEmails(account.id)
+    } else if (folderId === 'sent') {
+      // 加载已发送邮件列表
+      await loadSentEmails(account.id)
+    } else if (folderId === 'drafts') {
+      // 加载草稿邮件列表
+      await loadDraftEmails(account.id)
     } else {
       await mailboxStore.loadEmails(account.id, folderId)
     }
@@ -247,6 +280,34 @@ async function loadTrashEmails(accountId: string) {
     mailboxStore.emails = emails
   } catch (e) {
     console.error('加载回收站邮件失败:', e)
+  } finally {
+    mailboxStore.loading = false
+  }
+}
+
+async function loadSentEmails(accountId: string) {
+  mailboxStore.loading = true
+  try {
+    const emails = await getSentEmails(accountId)
+    mailboxStore.emails = emails
+    // 更新已发送数量
+    mailboxStore.sentCount = await getSentCount(accountId)
+  } catch (e) {
+    console.error('加载已发送邮件失败:', e)
+  } finally {
+    mailboxStore.loading = false
+  }
+}
+
+async function loadDraftEmails(accountId: string) {
+  mailboxStore.loading = true
+  try {
+    const emails = await getDraftEmails(accountId)
+    mailboxStore.emails = emails
+    // 更新草稿数量
+    mailboxStore.draftCount = await getDraftCount(accountId)
+  } catch (e) {
+    console.error('加载草稿邮件失败:', e)
   } finally {
     mailboxStore.loading = false
   }

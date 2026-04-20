@@ -14,6 +14,11 @@ import {
   getTrashEmails,
   restoreEmail as restoreEmailService,
   permanentDelete as permanentDeleteService,
+  getSentEmails,
+  getSentCount,
+  getDraftEmails,
+  getDraftCount,
+  deleteDraft as deleteDraftService,
   type SyncResult
 } from '@/services/email/emailService'
 import { useNotificationStore } from '@/stores/notification'
@@ -64,6 +69,8 @@ export const useMailboxStore = defineStore('mailbox', () => {
   const currentFolder = ref('inbox')
   const unreadCount = ref(0)
   const starredCount = ref(0)
+  const sentCount = ref(0)
+  const draftCount = ref(0)
 
   // Getters
   const selectedEmail = computed(() => {
@@ -149,8 +156,14 @@ export const useMailboxStore = defineStore('mailbox', () => {
         starredCount.value = await getStarredCount(accountId)
       } else if (folder === 'trash') {
         emails.value = await getTrashEmails(accountId)
-      } else if (folder === 'sent' || folder === 'drafts' || folder === 'archive') {
-        // 这些文件夹功能尚未实现，显示空列表
+      } else if (folder === 'sent') {
+        emails.value = await getSentEmails(accountId)
+        sentCount.value = await getSentCount(accountId)
+      } else if (folder === 'drafts') {
+        emails.value = await getDraftEmails(accountId)
+        draftCount.value = await getDraftCount(accountId)
+      } else if (folder === 'archive') {
+        // 归档功能尚未实现，显示空列表
         emails.value = []
       } else {
         // 其他文件夹默认显示收件箱
@@ -298,6 +311,34 @@ export const useMailboxStore = defineStore('mailbox', () => {
     }
   }
 
+  // 删除草稿
+  async function deleteDraft(id: string) {
+    const email = emails.value.find(e => e.id === id)
+    if (!email) return
+
+    try {
+      // 草稿的 id 是 "draft-{draft_id}"，需要提取 draft_id
+      const draftId = email.id.replace('draft-', '')
+      await deleteDraftService(draftId)
+
+      // 从列表中移除草稿
+      emails.value = emails.value.filter(e => e.id !== id)
+
+      // 清空选中状态
+      if (selectedEmailId.value === id) {
+        selectedEmailId.value = null
+      }
+
+      // 更新草稿计数
+      if (email.accountId) {
+        draftCount.value = await getDraftCount(email.accountId)
+      }
+    } catch (e) {
+      console.error('Failed to delete draft:', e)
+      throw e
+    }
+  }
+
   function clearSelection() {
     selectedEmailId.value = null
   }
@@ -331,6 +372,8 @@ export const useMailboxStore = defineStore('mailbox', () => {
     currentFolder,
     unreadCount,
     starredCount,
+    sentCount,
+    draftCount,
     localUnreadCount,
     sync,
     loadEmails,
@@ -340,6 +383,7 @@ export const useMailboxStore = defineStore('mailbox', () => {
     moveToTrash,
     restoreEmail,
     permanentDelete,
+    deleteDraft,
     clearSelection,
     setCurrentFolder,
     clearError,

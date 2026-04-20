@@ -4,7 +4,7 @@ use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
 use std::path::PathBuf;
 
-use super::models::*;
+use super::models::{DbAccount, DbAttachment, DbContact, DbEmail, DraftUpdates, EmailFolder};
 
 /// Database manager
 #[derive(Clone)]
@@ -35,6 +35,8 @@ impl Database {
                 id TEXT PRIMARY KEY,
                 account_id TEXT NOT NULL,
                 uidl TEXT NOT NULL,
+                folder TEXT NOT NULL DEFAULT 'inbox',
+                draft_id TEXT,
                 from_address TEXT,
                 from_name TEXT,
                 to_addresses TEXT,
@@ -203,6 +205,51 @@ impl Database {
                 .map_err(|e| format!("创建 deleted_at 索引失败: {}", e))?;
         }
 
+        // 已发送/草稿功能迁移：添加 folder 字段
+        if !email_columns.contains(&"folder".to_string()) {
+            sqlx::query("ALTER TABLE emails ADD COLUMN folder TEXT NOT NULL DEFAULT 'inbox'")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| format!("添加 folder 字段失败: {}", e))?;
+
+            // 存量钓鱼邮件迁移到 phishing folder
+            sqlx::query("UPDATE emails SET folder = 'phishing' WHERE is_phishing = 1")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| format!("迁移钓鱼邮件 folder 失败: {}", e))?;
+        }
+
+        // 已发送/草稿功能迁移：添加 draft_id 字段
+        if !email_columns.contains(&"draft_id".to_string()) {
+            sqlx::query("ALTER TABLE emails ADD COLUMN draft_id TEXT")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| format!("添加 draft_id 字段失败: {}", e))?;
+        }
+
+        // 确保 folder 和 draft_id 索引存在（新数据库或已迁移的数据库都需要）
+        let indexes: Vec<String> = sqlx::query("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='emails'")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| format!("获取索引列表失败: {}", e))?
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect();
+
+        if !indexes.contains(&"idx_emails_folder".to_string()) {
+            sqlx::query("CREATE INDEX idx_emails_folder ON emails(account_id, folder)")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| format!("创建 folder 索引失败: {}", e))?;
+        }
+
+        if !indexes.contains(&"idx_emails_draft_id".to_string()) {
+            sqlx::query("CREATE INDEX idx_emails_draft_id ON emails(draft_id)")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| format!("创建 draft_id 索引失败: {}", e))?;
+        }
+
         // 联系人功能迁移：检查 contacts 表是否存在
         let tables: Vec<String> = sqlx::query("SELECT name FROM sqlite_master WHERE type='table'")
             .fetch_all(&self.pool)
@@ -242,15 +289,17 @@ impl Database {
         sqlx::query(
             r#"
             INSERT OR REPLACE INTO emails
-            (id, account_id, uidl, from_address, from_name, to_addresses, cc_addresses,
+            (id, account_id, uidl, folder, draft_id, from_address, from_name, to_addresses, cc_addresses,
              subject, body_text, body_html, date, is_read, is_starred, has_attachment,
              is_phishing, phishing_reasons, user_overridden, deleted_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&email.id)
         .bind(&email.account_id)
         .bind(&email.uidl)
+        .bind(&email.folder)
+        .bind(&email.draft_id)
         .bind(&email.from_address)
         .bind(&email.from_name)
         .bind(&email.to_addresses)
@@ -270,25 +319,27 @@ impl Database {
         .await
         .map_err(|e| format!("保存邮件失败: {}", e))?;
 
-        // 自动创建/更新发件人联系人
-        if let Some(from_addr) = &email.from_address {
-            if !from_addr.is_empty() {
-                self.upsert_contact(from_addr, email.from_name.as_deref()).await?;
+        // 自动创建/更新发件人联系人（仅收件箱邮件）
+        if email.folder == "inbox" {
+            if let Some(from_addr) = &email.from_address {
+                if !from_addr.is_empty() {
+                    self.upsert_contact(from_addr, email.from_name.as_deref()).await?;
+                }
             }
         }
 
         Ok(())
     }
 
-    /// Get all emails for an account (excluding phishing emails)
+    /// Get all emails for an account (inbox folder, excluding deleted emails)
     pub async fn get_emails(&self, account_id: &str) -> Result<Vec<DbEmail>, String> {
         let rows = sqlx::query(
             r#"
-            SELECT id, account_id, uidl, from_address, from_name, to_addresses, cc_addresses,
+            SELECT id, account_id, uidl, folder, draft_id, from_address, from_name, to_addresses, cc_addresses,
                    subject, body_text, body_html, date, is_read, is_starred, has_attachment,
                    is_phishing, phishing_reasons, user_overridden, deleted_at
             FROM emails
-            WHERE account_id = ? AND is_phishing = 0 AND deleted_at IS NULL
+            WHERE account_id = ? AND folder = 'inbox' AND deleted_at IS NULL
             ORDER BY date DESC
             "#,
         )
@@ -303,6 +354,8 @@ impl Database {
                 id: row.get("id"),
                 account_id: row.get("account_id"),
                 uidl: row.get("uidl"),
+                folder: row.get("folder"),
+                draft_id: row.get("draft_id"),
                 from_address: row.get("from_address"),
                 from_name: row.get("from_name"),
                 to_addresses: row.get("to_addresses"),
@@ -328,7 +381,7 @@ impl Database {
     pub async fn get_email_by_id(&self, id: &str) -> Result<Option<DbEmail>, String> {
         let row = sqlx::query(
             r#"
-            SELECT id, account_id, uidl, from_address, from_name, to_addresses, cc_addresses,
+            SELECT id, account_id, uidl, folder, draft_id, from_address, from_name, to_addresses, cc_addresses,
                    subject, body_text, body_html, date, is_read, is_starred, has_attachment,
                    is_phishing, phishing_reasons, user_overridden, deleted_at
             FROM emails
@@ -344,6 +397,8 @@ impl Database {
             id: row.get("id"),
             account_id: row.get("account_id"),
             uidl: row.get("uidl"),
+            folder: row.get("folder"),
+            draft_id: row.get("draft_id"),
             from_address: row.get("from_address"),
             from_name: row.get("from_name"),
             to_addresses: row.get("to_addresses"),
@@ -506,9 +561,9 @@ impl Database {
         Ok(())
     }
 
-    /// Get unread count for an account (excluding phishing emails and deleted emails)
+    /// Get unread count for an account (inbox folder)
     pub async fn get_unread_count(&self, account_id: &str) -> Result<i32, String> {
-        let row = sqlx::query("SELECT COUNT(*) as count FROM emails WHERE account_id = ? AND is_read = 0 AND is_phishing = 0 AND deleted_at IS NULL")
+        let row = sqlx::query("SELECT COUNT(*) as count FROM emails WHERE account_id = ? AND folder = 'inbox' AND is_read = 0 AND deleted_at IS NULL")
             .bind(account_id)
             .fetch_one(&self.pool)
             .await
@@ -548,15 +603,15 @@ impl Database {
         Ok(())
     }
 
-    /// Get all phishing emails for an account
+    /// Get all phishing emails for an account (phishing folder)
     pub async fn get_phishing_emails(&self, account_id: &str) -> Result<Vec<DbEmail>, String> {
         let rows = sqlx::query(
             r#"
-            SELECT id, account_id, uidl, from_address, from_name, to_addresses, cc_addresses,
+            SELECT id, account_id, uidl, folder, draft_id, from_address, from_name, to_addresses, cc_addresses,
                    subject, body_text, body_html, date, is_read, is_starred, has_attachment,
                    is_phishing, phishing_reasons, user_overridden, deleted_at
             FROM emails
-            WHERE account_id = ? AND is_phishing = 1 AND deleted_at IS NULL
+            WHERE account_id = ? AND folder = 'phishing' AND deleted_at IS NULL
             ORDER BY date DESC
             "#,
         )
@@ -571,6 +626,8 @@ impl Database {
                 id: row.get("id"),
                 account_id: row.get("account_id"),
                 uidl: row.get("uidl"),
+                folder: row.get("folder"),
+                draft_id: row.get("draft_id"),
                 from_address: row.get("from_address"),
                 from_name: row.get("from_name"),
                 to_addresses: row.get("to_addresses"),
@@ -592,9 +649,9 @@ impl Database {
         Ok(emails)
     }
 
-    /// Get phishing count for an account
+    /// Get phishing count for an account (phishing folder)
     pub async fn get_phishing_count(&self, account_id: &str) -> Result<i32, String> {
-        let row = sqlx::query("SELECT COUNT(*) as count FROM emails WHERE account_id = ? AND is_phishing = 1 AND deleted_at IS NULL")
+        let row = sqlx::query("SELECT COUNT(*) as count FROM emails WHERE account_id = ? AND folder = 'phishing' AND deleted_at IS NULL")
             .bind(account_id)
             .fetch_one(&self.pool)
             .await
@@ -603,9 +660,9 @@ impl Database {
         Ok(row.get("count"))
     }
 
-    /// Get unread phishing count for an account
+    /// Get unread phishing count for an account (phishing folder)
     pub async fn get_phishing_unread_count(&self, account_id: &str) -> Result<i32, String> {
-        let row = sqlx::query("SELECT COUNT(*) as count FROM emails WHERE account_id = ? AND is_phishing = 1 AND is_read = 0 AND deleted_at IS NULL")
+        let row = sqlx::query("SELECT COUNT(*) as count FROM emails WHERE account_id = ? AND folder = 'phishing' AND is_read = 0 AND deleted_at IS NULL")
             .bind(account_id)
             .fetch_one(&self.pool)
             .await
@@ -614,15 +671,15 @@ impl Database {
         Ok(row.get("count"))
     }
 
-    /// Get all starred emails for an account (excluding phishing emails)
+    /// Get all starred emails for an account (inbox and sent folders)
     pub async fn get_starred_emails(&self, account_id: &str) -> Result<Vec<DbEmail>, String> {
         let rows = sqlx::query(
             r#"
-            SELECT id, account_id, uidl, from_address, from_name, to_addresses, cc_addresses,
+            SELECT id, account_id, uidl, folder, draft_id, from_address, from_name, to_addresses, cc_addresses,
                    subject, body_text, body_html, date, is_read, is_starred, has_attachment,
                    is_phishing, phishing_reasons, user_overridden, deleted_at
             FROM emails
-            WHERE account_id = ? AND is_starred = 1 AND is_phishing = 0 AND deleted_at IS NULL
+            WHERE account_id = ? AND is_starred = 1 AND folder IN ('inbox', 'sent') AND deleted_at IS NULL
             ORDER BY date DESC
             "#,
         )
@@ -637,6 +694,8 @@ impl Database {
                 id: row.get("id"),
                 account_id: row.get("account_id"),
                 uidl: row.get("uidl"),
+                folder: row.get("folder"),
+                draft_id: row.get("draft_id"),
                 from_address: row.get("from_address"),
                 from_name: row.get("from_name"),
                 to_addresses: row.get("to_addresses"),
@@ -658,9 +717,9 @@ impl Database {
         Ok(emails)
     }
 
-    /// Get starred count for an account (excluding phishing emails and deleted emails)
+    /// Get starred count for an account (inbox and sent folders)
     pub async fn get_starred_count(&self, account_id: &str) -> Result<i32, String> {
-        let row = sqlx::query("SELECT COUNT(*) as count FROM emails WHERE account_id = ? AND is_starred = 1 AND is_phishing = 0 AND deleted_at IS NULL")
+        let row = sqlx::query("SELECT COUNT(*) as count FROM emails WHERE account_id = ? AND is_starred = 1 AND folder IN ('inbox', 'sent') AND deleted_at IS NULL")
             .bind(account_id)
             .fetch_one(&self.pool)
             .await
@@ -700,7 +759,7 @@ impl Database {
     pub async fn get_trash_emails(&self, account_id: &str) -> Result<Vec<DbEmail>, String> {
         let rows = sqlx::query(
             r#"
-            SELECT id, account_id, uidl, from_address, from_name, to_addresses, cc_addresses,
+            SELECT id, account_id, uidl, folder, draft_id, from_address, from_name, to_addresses, cc_addresses,
                    subject, body_text, body_html, date, is_read, is_starred, has_attachment,
                    is_phishing, phishing_reasons, user_overridden, deleted_at
             FROM emails
@@ -719,6 +778,8 @@ impl Database {
                 id: row.get("id"),
                 account_id: row.get("account_id"),
                 uidl: row.get("uidl"),
+                folder: row.get("folder"),
+                draft_id: row.get("draft_id"),
                 from_address: row.get("from_address"),
                 from_name: row.get("from_name"),
                 to_addresses: row.get("to_addresses"),
@@ -784,6 +845,260 @@ impl Database {
             .map_err(|e| format!("清理过期回收站邮件失败: {}", e))?;
 
         Ok(result.rows_affected())
+    }
+
+    // ==================== 已发送/草稿功能方法 ====================
+
+    /// Get sent emails for an account (sent folder)
+    pub async fn get_sent_emails(&self, account_id: &str) -> Result<Vec<DbEmail>, String> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, account_id, uidl, folder, draft_id, from_address, from_name, to_addresses, cc_addresses,
+                   subject, body_text, body_html, date, is_read, is_starred, has_attachment,
+                   is_phishing, phishing_reasons, user_overridden, deleted_at
+            FROM emails
+            WHERE account_id = ? AND folder = 'sent' AND deleted_at IS NULL
+            ORDER BY date DESC
+            "#,
+        )
+        .bind(account_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| format!("获取已发送邮件列表失败: {}", e))?;
+
+        let emails = rows
+            .into_iter()
+            .map(|row| DbEmail {
+                id: row.get("id"),
+                account_id: row.get("account_id"),
+                uidl: row.get("uidl"),
+                folder: row.get("folder"),
+                draft_id: row.get("draft_id"),
+                from_address: row.get("from_address"),
+                from_name: row.get("from_name"),
+                to_addresses: row.get("to_addresses"),
+                cc_addresses: row.get("cc_addresses"),
+                subject: row.get("subject"),
+                body_text: row.get("body_text"),
+                body_html: row.get("body_html"),
+                date: row.get("date"),
+                is_read: row.get::<i32, _>("is_read") == 1,
+                is_starred: row.get::<i32, _>("is_starred") == 1,
+                has_attachment: row.get::<i32, _>("has_attachment") == 1,
+                is_phishing: row.get::<i32, _>("is_phishing") == 1,
+                phishing_reasons: row.get("phishing_reasons"),
+                user_overridden: row.get::<i32, _>("user_overridden") == 1,
+                deleted_at: row.get("deleted_at"),
+            })
+            .collect();
+
+        Ok(emails)
+    }
+
+    /// Get draft emails for an account (drafts folder)
+    pub async fn get_draft_emails(&self, account_id: &str) -> Result<Vec<DbEmail>, String> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, account_id, uidl, folder, draft_id, from_address, from_name, to_addresses, cc_addresses,
+                   subject, body_text, body_html, date, is_read, is_starred, has_attachment,
+                   is_phishing, phishing_reasons, user_overridden, deleted_at
+            FROM emails
+            WHERE account_id = ? AND folder = 'drafts' AND deleted_at IS NULL
+            ORDER BY date DESC
+            "#,
+        )
+        .bind(account_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| format!("获取草稿邮件列表失败: {}", e))?;
+
+        let emails = rows
+            .into_iter()
+            .map(|row| DbEmail {
+                id: row.get("id"),
+                account_id: row.get("account_id"),
+                uidl: row.get("uidl"),
+                folder: row.get("folder"),
+                draft_id: row.get("draft_id"),
+                from_address: row.get("from_address"),
+                from_name: row.get("from_name"),
+                to_addresses: row.get("to_addresses"),
+                cc_addresses: row.get("cc_addresses"),
+                subject: row.get("subject"),
+                body_text: row.get("body_text"),
+                body_html: row.get("body_html"),
+                date: row.get("date"),
+                is_read: row.get::<i32, _>("is_read") == 1,
+                is_starred: row.get::<i32, _>("is_starred") == 1,
+                has_attachment: row.get::<i32, _>("has_attachment") == 1,
+                is_phishing: row.get::<i32, _>("is_phishing") == 1,
+                phishing_reasons: row.get("phishing_reasons"),
+                user_overridden: row.get::<i32, _>("user_overridden") == 1,
+                deleted_at: row.get("deleted_at"),
+            })
+            .collect();
+
+        Ok(emails)
+    }
+
+    /// Get sent count for an account (sent folder)
+    pub async fn get_sent_count(&self, account_id: &str) -> Result<i32, String> {
+        let row = sqlx::query("SELECT COUNT(*) as count FROM emails WHERE account_id = ? AND folder = 'sent' AND deleted_at IS NULL")
+            .bind(account_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| format!("获取已发送邮件数量失败: {}", e))?;
+
+        Ok(row.get("count"))
+    }
+
+    /// Get draft count for an account (drafts folder)
+    pub async fn get_draft_count(&self, account_id: &str) -> Result<i32, String> {
+        let row = sqlx::query("SELECT COUNT(*) as count FROM emails WHERE account_id = ? AND folder = 'drafts' AND deleted_at IS NULL")
+            .bind(account_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| format!("获取草稿邮件数量失败: {}", e))?;
+
+        Ok(row.get("count"))
+    }
+
+    /// Create a draft email
+    pub async fn create_draft(&self, draft: &DbEmail) -> Result<String, String> {
+        let draft_id = draft.draft_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let now = chrono::Utc::now().timestamp();
+
+        sqlx::query(
+            r#"
+            INSERT INTO emails
+            (id, account_id, uidl, folder, draft_id, from_address, from_name, to_addresses, cc_addresses,
+             subject, body_text, body_html, date, is_read, is_starred, has_attachment,
+             is_phishing, phishing_reasons, user_overridden, deleted_at)
+            VALUES (?, ?, ?, 'drafts', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, 0, NULL, 0, NULL)
+            "#,
+        )
+        .bind(&draft.id)
+        .bind(&draft.account_id)
+        .bind(&format!("draft-{}", draft_id))
+        .bind(&draft_id)
+        .bind(&draft.from_address)
+        .bind(&draft.from_name)
+        .bind(&draft.to_addresses)
+        .bind(&draft.cc_addresses)
+        .bind(&draft.subject)
+        .bind(&draft.body_text)
+        .bind(&draft.body_html)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| format!("创建草稿失败: {}", e))?;
+
+        Ok(draft_id)
+    }
+
+    /// Update a draft email by draft_id
+    pub async fn update_draft(&self, draft_id: &str, updates: &DraftUpdates) -> Result<(), String> {
+        let now = chrono::Utc::now().timestamp();
+
+        sqlx::query(
+            r#"
+            UPDATE emails SET
+                to_addresses = ?,
+                cc_addresses = ?,
+                subject = ?,
+                body_text = ?,
+                body_html = ?,
+                date = ?
+            WHERE draft_id = ? AND folder = 'drafts'
+            "#,
+        )
+        .bind(&updates.to_addresses)
+        .bind(&updates.cc_addresses)
+        .bind(&updates.subject)
+        .bind(&updates.body_text)
+        .bind(&updates.body_html)
+        .bind(now)
+        .bind(draft_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| format!("更新草稿失败: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Delete a draft by draft_id
+    pub async fn delete_draft(&self, draft_id: &str) -> Result<(), String> {
+        sqlx::query("DELETE FROM emails WHERE draft_id = ? AND folder = 'drafts'")
+            .bind(draft_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| format!("删除草稿失败: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Mark draft as sent - move to sent folder and clear draft_id
+    pub async fn mark_draft_as_sent(&self, draft_id: &str, sent_uidl: &str) -> Result<(), String> {
+        let now = chrono::Utc::now().timestamp();
+
+        sqlx::query(
+            r#"
+            UPDATE emails SET
+                folder = 'sent',
+                draft_id = NULL,
+                uidl = ?,
+                date = ?
+            WHERE draft_id = ? AND folder = 'drafts'
+            "#,
+        )
+        .bind(sent_uidl)
+        .bind(now)
+        .bind(draft_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| format!("标记草稿已发送失败: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Get draft by draft_id
+    pub async fn get_draft_by_id(&self, draft_id: &str) -> Result<Option<DbEmail>, String> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, account_id, uidl, folder, draft_id, from_address, from_name, to_addresses, cc_addresses,
+                   subject, body_text, body_html, date, is_read, is_starred, has_attachment,
+                   is_phishing, phishing_reasons, user_overridden, deleted_at
+            FROM emails
+            WHERE draft_id = ? AND folder = 'drafts'
+            "#,
+        )
+        .bind(draft_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| format!("获取草稿失败: {}", e))?;
+
+        Ok(row.map(|row| DbEmail {
+            id: row.get("id"),
+            account_id: row.get("account_id"),
+            uidl: row.get("uidl"),
+            folder: row.get("folder"),
+            draft_id: row.get("draft_id"),
+            from_address: row.get("from_address"),
+            from_name: row.get("from_name"),
+            to_addresses: row.get("to_addresses"),
+            cc_addresses: row.get("cc_addresses"),
+            subject: row.get("subject"),
+            body_text: row.get("body_text"),
+            body_html: row.get("body_html"),
+            date: row.get("date"),
+            is_read: row.get::<i32, _>("is_read") == 1,
+            is_starred: row.get::<i32, _>("is_starred") == 1,
+            has_attachment: row.get::<i32, _>("has_attachment") == 1,
+            is_phishing: row.get::<i32, _>("is_phishing") == 1,
+            phishing_reasons: row.get("phishing_reasons"),
+            user_overridden: row.get::<i32, _>("user_overridden") == 1,
+            deleted_at: row.get("deleted_at"),
+        }))
     }
 
     // ==================== 联系人功能方法 ====================

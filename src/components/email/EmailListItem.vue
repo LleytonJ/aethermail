@@ -21,7 +21,7 @@
 
       <!-- 内容 -->
       <div class="flex-1 min-w-0">
-        <!-- 第一行：发件人 + 时间 -->
+        <!-- 第一行：发件人/收件人 + 时间 -->
         <div class="flex items-center justify-between gap-2">
           <span
             :class="[
@@ -29,7 +29,7 @@
               email.isRead ? 'text-text-secondary' : 'font-semibold text-text-primary'
             ]"
           >
-            {{ email.fromName || email.fromAddress || '未知发件人' }}
+            {{ displayName }}
           </span>
           <span class="text-xs text-text-muted whitespace-nowrap shrink-0">
             {{ formatTime(email.date) }}
@@ -72,6 +72,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useMailboxStore } from '@/stores/mailbox'
 import type { Email } from '@/stores/mailbox'
 import { Paperclip, Star } from 'lucide-vue-next'
 
@@ -86,7 +87,34 @@ defineEmits<{
   toggleStar: []
 }>()
 
-const avatarLetter = computed(() => (props.email.fromName || props.email.fromAddress || '?').charAt(0).toUpperCase())
+const mailboxStore = useMailboxStore()
+
+// 根据文件夹类型决定显示发件人还是收件人
+const displayName = computed(() => {
+  const folder = mailboxStore.currentFolder
+  if (folder === 'sent' || folder === 'drafts') {
+    // 已发送/草稿显示收件人
+    const toAddresses = props.email.toAddresses
+    if (toAddresses.length === 0) return '无收件人'
+    if (toAddresses.length === 1) return toAddresses[0]
+    return `${toAddresses[0]} 等 ${toAddresses.length} 人`
+  }
+  // 其他文件夹显示发件人
+  return props.email.fromName || props.email.fromAddress || '未知发件人'
+})
+
+const avatarLetter = computed(() => {
+  const folder = mailboxStore.currentFolder
+  if (folder === 'sent' || folder === 'drafts') {
+    // 已发送/草稿使用收件人首字母
+    const toAddresses = props.email.toAddresses
+    if (toAddresses.length > 0) {
+      return toAddresses[0].charAt(0).toUpperCase()
+    }
+    return '?'
+  }
+  return (props.email.fromName || props.email.fromAddress || '?').charAt(0).toUpperCase()
+})
 
 function formatTime(timestamp: number): string {
   // 处理无效的时间戳

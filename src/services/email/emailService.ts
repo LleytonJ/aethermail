@@ -6,6 +6,20 @@ import { invoke } from '@tauri-apps/api/core'
 import type { Email } from '@/stores/mailbox'
 
 /**
+ * 检查数据库是否就绪
+ */
+export async function isDatabaseReady(): Promise<boolean> {
+  return invoke<boolean>('is_database_ready')
+}
+
+/**
+ * 等待数据库就绪（带超时）
+ */
+export async function waitForDatabase(timeoutMs: number = 5000): Promise<boolean> {
+  return invoke<boolean>('wait_for_database', { timeoutMs })
+}
+
+/**
  * 同步结果
  */
 export interface SyncResult {
@@ -432,4 +446,166 @@ export async function clearCache(): Promise<void> {
  */
 export async function openCacheDirectory(): Promise<void> {
   return invoke('open_attachment_cache_directory')
+}
+
+// ==================== 已发送/草稿功能 ====================
+
+/**
+ * 获取已发送邮件列表
+ */
+export async function getSentEmails(accountId: string): Promise<Email[]> {
+  const result = await invoke<any[]>('get_sent_emails', { accountId })
+
+  // 转换字段名
+  return result.map(e => ({
+    id: e.id,
+    accountId: e.account_id,
+    fromAddress: e.from_address,
+    fromName: e.from_name,
+    toAddresses: e.to_addresses,
+    ccAddresses: e.cc_addresses,
+    subject: e.subject,
+    snippet: e.snippet,
+    date: e.date,
+    isRead: e.is_read,
+    isStarred: e.is_starred,
+    hasAttachment: e.has_attachment,
+    isPhishing: e.is_phishing,
+    phishingReasons: e.phishing_reasons
+  }))
+}
+
+/**
+ * 获取已发送邮件数量
+ */
+export async function getSentCount(accountId: string): Promise<number> {
+  return invoke<number>('get_sent_count', { accountId })
+}
+
+/**
+ * 获取草稿邮件列表
+ */
+export async function getDraftEmails(accountId: string): Promise<Email[]> {
+  const result = await invoke<any[]>('get_draft_emails', { accountId })
+
+  // 转换字段名
+  return result.map(e => ({
+    id: e.id,
+    accountId: e.account_id,
+    fromAddress: e.from_address,
+    fromName: e.from_name,
+    toAddresses: e.to_addresses,
+    ccAddresses: e.cc_addresses,
+    subject: e.subject,
+    snippet: e.snippet,
+    date: e.date,
+    isRead: e.is_read,
+    isStarred: e.is_starred,
+    hasAttachment: e.has_attachment,
+    isPhishing: false,
+    phishingReasons: undefined
+  }))
+}
+
+/**
+ * 获取草稿邮件数量
+ */
+export async function getDraftCount(accountId: string): Promise<number> {
+  return invoke<number>('get_draft_count', { accountId })
+}
+
+/**
+ * 草稿数据
+ */
+export interface DraftData {
+  accountId: string
+  toAddresses: string[]
+  ccAddresses: string[]
+  subject: string | null
+  bodyText: string | null
+  bodyHtml: string | null
+}
+
+/**
+ * 创建草稿
+ * 返回草稿 ID
+ */
+export async function createDraft(draft: DraftData): Promise<string> {
+  return invoke<string>('create_draft', {
+    draft: {
+      account_id: draft.accountId,
+      to_addresses: draft.toAddresses,
+      cc_addresses: draft.ccAddresses,
+      subject: draft.subject,
+      body_text: draft.bodyText,
+      body_html: draft.bodyHtml
+    }
+  })
+}
+
+/**
+ * 更新草稿
+ */
+export async function updateDraft(draftId: string, draft: DraftData): Promise<void> {
+  return invoke('update_draft', {
+    draftId,
+    draft: {
+      account_id: draft.accountId,
+      to_addresses: draft.toAddresses,
+      cc_addresses: draft.ccAddresses,
+      subject: draft.subject,
+      body_text: draft.bodyText,
+      body_html: draft.bodyHtml
+    }
+  })
+}
+
+/**
+ * 删除草稿
+ */
+export async function deleteDraft(draftId: string): Promise<void> {
+  return invoke('delete_draft', { draftId })
+}
+
+/**
+ * 发送草稿
+ */
+export async function sendDraft(draftId: string, signatureHtml?: string | null): Promise<SendEmailResult> {
+  return invoke<SendEmailResult>('send_draft', {
+    draftId,
+    signatureHtml: signatureHtml || null
+  })
+}
+
+/**
+ * 获取草稿详情
+ */
+export async function getDraftDetail(draftId: string): Promise<EmailDetail | null> {
+  const result = await invoke<EmailDetail | null>('get_draft_detail', { draftId })
+
+  if (!result) return null
+
+  return {
+    id: result.id,
+    account_id: result.account_id,
+    from_address: result.from_address,
+    from_name: result.from_name,
+    to_addresses: result.to_addresses,
+    cc_addresses: result.cc_addresses,
+    subject: result.subject,
+    body_text: result.body_text,
+    body_html: result.body_html,
+    date: result.date,
+    is_read: result.is_read,
+    is_starred: result.is_starred,
+    has_attachment: result.has_attachment,
+    attachments: result.attachments.map(a => ({
+      id: a.id,
+      filename: a.filename,
+      mime_type: a.mime_type,
+      size: a.size
+    })),
+    is_phishing: false,
+    phishing_reasons: null
+  }
 }

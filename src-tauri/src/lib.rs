@@ -96,6 +96,19 @@ pub fn run() {
             // Starred commands
             commands::get_starred_emails,
             commands::get_starred_count,
+            // Sent/Draft commands (已发送/草稿)
+            commands::get_sent_emails,
+            commands::get_sent_count,
+            commands::get_draft_emails,
+            commands::get_draft_count,
+            commands::create_draft,
+            commands::update_draft,
+            commands::delete_draft,
+            commands::send_draft,
+            commands::get_draft_detail,
+            // Database readiness check
+            commands::is_database_ready,
+            commands::wait_for_database,
             // Trash commands (回收站)
             commands::move_to_trash,
             commands::get_trash_emails,

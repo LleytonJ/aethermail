@@ -6,7 +6,7 @@ import { ref, computed } from 'vue'
  */
 export interface ComposeState {
   isOpen: boolean
-  mode: 'new' | 'reply' | 'forward'
+  mode: 'new' | 'reply' | 'forward' | 'draft'
   replyTo?: {
     from: string
     subject: string
@@ -15,6 +15,14 @@ export interface ComposeState {
   forward?: {
     subject: string
     body: string
+  }
+  draft?: {
+    draftId: string
+    toAddresses: string[]
+    ccAddresses: string[]
+    subject: string | null
+    bodyHtml: string | null
+    bodyText: string | null
   }
 }
 
@@ -55,6 +63,15 @@ export const useComposeStore = defineStore('compose', () => {
     }
   }
 
+  // 打开编辑草稿
+  function openDraft(draftId: string, toAddresses: string[], ccAddresses: string[], subject: string | null, bodyHtml: string | null, bodyText: string | null) {
+    state.value = {
+      isOpen: true,
+      mode: 'draft',
+      draft: { draftId, toAddresses, ccAddresses, subject, bodyHtml, bodyText }
+    }
+  }
+
   // 关闭撰写
   function close() {
     state.value = {
@@ -70,6 +87,7 @@ export const useComposeStore = defineStore('compose', () => {
     openNewEmail,
     openReply,
     openForward,
+    openDraft,
     close
   }
 })

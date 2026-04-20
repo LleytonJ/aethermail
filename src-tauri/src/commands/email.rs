@@ -10,7 +10,7 @@ use tauri::Emitter;
 use crate::pop3::{Pop3Client, Pop3Config, Pop3Credentials, ParsedEmail, EmailAttachment};
 use crate::imap::{ImapClient, ImapConfig, ImapCredentials};
 use crate::smtp::{SmtpClient, SmtpConfig, SmtpCredentials, EmailMessage, SendEmailResult};
-use crate::storage::{Database, DbEmail, DbAttachment};
+use crate::storage::{Database, DbEmail, DbAttachment, DraftUpdates};
 use crate::commands::account::{get_accounts, ProtocolType};
 use crate::ai::{AiClient, is_ai_available};
 use crate::utils::html_extractor::HtmlExtractor;
@@ -77,6 +77,34 @@ pub async fn get_db() -> Result<Database, String> {
         .as_ref()
         .ok_or_else(|| "数据库未初始化".to_string())
         .map(|db| (*db).clone())
+}
+
+/// Check if database is ready
+#[tauri::command]
+pub async fn is_database_ready() -> Result<bool, String> {
+    let db_cell = DB.get_or_init(|| Arc::new(RwLock::new(None)));
+    let db_guard = db_cell.read().await;
+    Ok(db_guard.is_some())
+}
+
+/// Wait for database to be ready (with timeout in ms)
+#[tauri::command]
+pub async fn wait_for_database(timeout_ms: u64) -> Result<bool, String> {
+    let db_cell = DB.get_or_init(|| Arc::new(RwLock::new(None)));
+
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_millis(timeout_ms);
+
+    while start.elapsed() < timeout {
+        let db_guard = db_cell.read().await;
+        if db_guard.is_some() {
+            return Ok(true);
+        }
+        drop(db_guard);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    Ok(false)
 }
 
 /// Email data for frontend
@@ -321,6 +349,8 @@ async fn sync_via_pop3(account: &crate::commands::account::AccountConfig) -> Res
                     id: format!("email-{}", chrono::Utc::now().timestamp_millis()),
                     account_id: account_id.clone(),
                     uidl: parsed.uidl,
+                    folder: "inbox".to_string(),
+                    draft_id: None,
                     from_address: parsed.from_address,
                     from_name: parsed.from_name,
                     to_addresses: serde_json::to_string(&parsed.to_addresses).unwrap_or_default(),
@@ -445,6 +475,8 @@ async fn sync_via_imap(account: &crate::commands::account::AccountConfig) -> Res
                     id: format!("imap-{}-{}", account_id, imap_message.uid),
                     account_id: account_id.clone(),
                     uidl: uidl.clone(),
+                    folder: "inbox".to_string(),
+                    draft_id: None,
                     from_address: parsed.from_address,
                     from_name: parsed.from_name,
                     to_addresses: serde_json::to_string(&parsed.to_addresses).unwrap_or_default(),
@@ -999,6 +1031,285 @@ pub async fn get_starred_count(account_id: String) -> Result<i32, String> {
     db.get_starred_count(&account_id).await
 }
 
+// ==================== 已发送/草稿功能命令 ====================
+
+/// Get sent emails for an account
+#[tauri::command]
+pub async fn get_sent_emails(account_id: String) -> Result<Vec<Email>, String> {
+    let db = get_db().await?;
+    let db_emails = db.get_sent_emails(&account_id).await?;
+
+    let emails: Vec<Email> = db_emails
+        .into_iter()
+        .map(|e| {
+            let to_addresses: Vec<String> = serde_json::from_str(&e.to_addresses).unwrap_or_default();
+            let snippet = e.body_text
+                .as_ref()
+                .map(|t| t.chars().take(100).collect())
+                .unwrap_or_default();
+
+            Email {
+                id: e.id,
+                account_id: e.account_id,
+                from_address: e.from_address,
+                from_name: e.from_name,
+                to_addresses,
+                cc_addresses: serde_json::from_str(&e.cc_addresses).unwrap_or_default(),
+                subject: e.subject,
+                snippet,
+                date: e.date,
+                is_read: e.is_read,
+                is_starred: e.is_starred,
+                has_attachment: e.has_attachment,
+                is_phishing: e.is_phishing,
+                phishing_reasons: None, // 已发送邮件无钓鱼检测
+            }
+        })
+        .collect();
+
+    Ok(emails)
+}
+
+/// Get sent email count for an account
+#[tauri::command]
+pub async fn get_sent_count(account_id: String) -> Result<i32, String> {
+    let db = get_db().await?;
+    db.get_sent_count(&account_id).await
+}
+
+/// Get draft emails for an account
+#[tauri::command]
+pub async fn get_draft_emails(account_id: String) -> Result<Vec<Email>, String> {
+    let db = get_db().await?;
+    let db_emails = db.get_draft_emails(&account_id).await?;
+
+    let emails: Vec<Email> = db_emails
+        .into_iter()
+        .map(|e| {
+            let to_addresses: Vec<String> = serde_json::from_str(&e.to_addresses).unwrap_or_default();
+            let snippet = e.body_text
+                .as_ref()
+                .map(|t| t.chars().take(100).collect())
+                .unwrap_or_default();
+
+            Email {
+                id: e.id,
+                account_id: e.account_id,
+                from_address: e.from_address,
+                from_name: e.from_name,
+                to_addresses,
+                cc_addresses: serde_json::from_str(&e.cc_addresses).unwrap_or_default(),
+                subject: e.subject,
+                snippet,
+                date: e.date,
+                is_read: e.is_read,
+                is_starred: e.is_starred,
+                has_attachment: e.has_attachment,
+                is_phishing: false,
+                phishing_reasons: None,
+            }
+        })
+        .collect();
+
+    Ok(emails)
+}
+
+/// Get draft email count for an account
+#[tauri::command]
+pub async fn get_draft_count(account_id: String) -> Result<i32, String> {
+    let db = get_db().await?;
+    db.get_draft_count(&account_id).await
+}
+
+/// Draft data for creating/updating drafts
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DraftData {
+    pub account_id: String,
+    pub to_addresses: Vec<String>,
+    pub cc_addresses: Vec<String>,
+    pub subject: Option<String>,
+    pub body_text: Option<String>,
+    pub body_html: Option<String>,
+}
+
+/// Create a draft email
+#[tauri::command]
+pub async fn create_draft(draft: DraftData) -> Result<String, String> {
+    let db = get_db().await?;
+
+    // 获取账户信息以设置 from_address
+    let accounts = get_accounts()?;
+    let account = accounts
+        .iter()
+        .find(|a| a.id == draft.account_id)
+        .ok_or_else(|| "账户不存在".to_string())?;
+
+    let draft_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp();
+
+    let db_draft = DbEmail {
+        id: format!("draft-{}", draft_id),
+        account_id: draft.account_id.clone(),
+        uidl: format!("draft-{}", draft_id),
+        folder: "drafts".to_string(),
+        draft_id: Some(draft_id.clone()),
+        from_address: Some(account.email.clone()),
+        from_name: account.display_name.clone(),
+        to_addresses: serde_json::to_string(&draft.to_addresses).unwrap_or_default(),
+        cc_addresses: serde_json::to_string(&draft.cc_addresses).unwrap_or_default(),
+        subject: draft.subject,
+        body_text: draft.body_text,
+        body_html: draft.body_html,
+        date: now,
+        is_read: true,
+        is_starred: false,
+        has_attachment: false,
+        is_phishing: false,
+        phishing_reasons: None,
+        user_overridden: false,
+        deleted_at: None,
+    };
+
+    db.create_draft(&db_draft).await?;
+
+    Ok(draft_id)
+}
+
+/// Update a draft email
+#[tauri::command]
+pub async fn update_draft(draft_id: String, draft: DraftData) -> Result<(), String> {
+    let db = get_db().await?;
+
+    let updates = DraftUpdates {
+        to_addresses: serde_json::to_string(&draft.to_addresses).unwrap_or_default(),
+        cc_addresses: serde_json::to_string(&draft.cc_addresses).unwrap_or_default(),
+        subject: draft.subject,
+        body_text: draft.body_text,
+        body_html: draft.body_html,
+    };
+
+    db.update_draft(&draft_id, &updates).await
+}
+
+/// Delete a draft email
+#[tauri::command]
+pub async fn delete_draft(draft_id: String) -> Result<(), String> {
+    let db = get_db().await?;
+    db.delete_draft(&draft_id).await
+}
+
+/// Send a draft email
+#[tauri::command]
+pub async fn send_draft(
+    draft_id: String,
+    signature_html: Option<String>,
+) -> Result<SendEmailResult, String> {
+    let db = get_db().await?;
+
+    // 获取草稿内容
+    let draft = db.get_draft_by_id(&draft_id).await?
+        .ok_or_else(|| "草稿不存在".to_string())?;
+
+    // 获取账户配置
+    let accounts = get_accounts()?;
+    let account = accounts
+        .iter()
+        .find(|a| a.id == draft.account_id)
+        .ok_or_else(|| "账户不存在".to_string())?;
+
+    // 检查 SMTP 配置
+    if account.smtp_host.is_empty() {
+        return Err("账户未配置 SMTP 服务器".to_string());
+    }
+
+    // 创建 SMTP 客户端
+    let config = SmtpConfig {
+        host: account.smtp_host.clone(),
+        port: account.smtp_port,
+        use_ssl: account.smtp_use_ssl,
+    };
+    let credentials = SmtpCredentials {
+        username: account.email.clone(),
+        password: account.password.clone(),
+    };
+
+    let client = SmtpClient::new(config, credentials);
+
+    // 解析收件人
+    let to_addresses: Vec<String> = serde_json::from_str(&draft.to_addresses).unwrap_or_default();
+    let cc_addresses: Vec<String> = serde_json::from_str(&draft.cc_addresses).unwrap_or_default();
+
+    // 处理签名
+    let final_body_html = if let Some(html) = draft.body_html.clone() {
+        if let Some(sig) = signature_html {
+            if !sig.is_empty() {
+                Some(format!(
+                    "{}<div style=\"margin-top:16px;border-top:1px solid #e5e5e5;padding-top:12px\">{}</div>",
+                    html, sig
+                ))
+            } else {
+                Some(html)
+            }
+        } else {
+            Some(html)
+        }
+    } else {
+        None
+    };
+
+    // 创建邮件消息
+    let email = EmailMessage {
+        from_address: account.email.clone(),
+        from_name: account.display_name.clone(),
+        to_addresses,
+        cc_addresses: Some(cc_addresses),
+        subject: draft.subject.clone().unwrap_or_default(),
+        body: draft.body_text.clone().unwrap_or_default(),
+        body_html: final_body_html,
+    };
+
+    // 发送邮件
+    let result = client.send_email(email).await;
+
+    // 发送成功后标记草稿为已发送
+    if result.success {
+        let sent_uidl = format!("sent-{}", chrono::Utc::now().timestamp_millis());
+        db.mark_draft_as_sent(&draft_id, &sent_uidl).await?;
+    }
+
+    Ok(result)
+}
+
+/// Get draft detail by draft_id
+#[tauri::command]
+pub async fn get_draft_detail(draft_id: String) -> Result<Option<EmailDetail>, String> {
+    let db = get_db().await?;
+    let draft = db.get_draft_by_id(&draft_id).await?;
+
+    if let Some(e) = draft {
+        Ok(Some(EmailDetail {
+            id: e.id,
+            account_id: e.account_id,
+            from_address: e.from_address,
+            from_name: e.from_name,
+            to_addresses: serde_json::from_str(&e.to_addresses).unwrap_or_default(),
+            cc_addresses: serde_json::from_str(&e.cc_addresses).unwrap_or_default(),
+            subject: e.subject,
+            body_text: e.body_text,
+            body_html: e.body_html,
+            date: e.date,
+            is_read: e.is_read,
+            is_starred: e.is_starred,
+            has_attachment: e.has_attachment,
+            attachments: vec![], // 草稿暂不支持附件
+            is_phishing: false,
+            phishing_reasons: None,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
 /// Send an email
 #[tauri::command]
 pub async fn send_email(
@@ -1068,15 +1379,51 @@ pub async fn send_email(
     let email = EmailMessage {
         from_address: account.email.clone(),
         from_name: account.display_name.clone(),
-        to_addresses,
-        cc_addresses,
-        subject,
-        body,
-        body_html: final_body_html,
+        to_addresses: to_addresses.clone(),
+        cc_addresses: cc_addresses.clone(),
+        subject: subject.clone(),
+        body: body.clone(),
+        body_html: final_body_html.clone(),
     };
 
     // Send email
-    Ok(client.send_email(email).await)
+    let result = client.send_email(email).await;
+
+    // 发送成功后保存到本地数据库（已发送文件夹）
+    if result.success {
+        let db = get_db().await?;
+        let now = chrono::Utc::now().timestamp();
+        let sent_id = format!("sent-{}", now);
+
+        let sent_email = DbEmail {
+            id: sent_id.clone(),
+            account_id: account_id.clone(),
+            uidl: format!("sent-{}", now),
+            folder: "sent".to_string(),
+            draft_id: None,
+            from_address: Some(account.email.clone()),
+            from_name: account.display_name.clone(),
+            to_addresses: serde_json::to_string(&to_addresses).unwrap_or_default(),
+            cc_addresses: serde_json::to_string(&cc_addresses.unwrap_or_default()).unwrap_or_default(),
+            subject: Some(subject),
+            body_text: Some(body),
+            body_html: final_body_html,
+            date: now,
+            is_read: true,
+            is_starred: false,
+            has_attachment: false,
+            is_phishing: false,
+            phishing_reasons: None,
+            user_overridden: false,
+            deleted_at: None,
+        };
+
+        if let Err(e) = db.save_email(&sent_email).await {
+            log::warn!("保存已发送邮件到本地数据库失败: {}", e);
+        }
+    }
+
+    Ok(result)
 }
 
 // ==================== 附件懒加载相关命令 ====================

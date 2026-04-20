@@ -33,6 +33,10 @@ pub struct DbEmail {
     pub id: String,
     pub account_id: String,
     pub uidl: String,
+    /// 邮件文件夹: inbox, sent, drafts, phishing
+    pub folder: String,
+    /// 草稿 ID（仅草稿邮件有值，发送后清空）
+    pub draft_id: Option<String>,
     pub from_address: Option<String>,
     pub from_name: Option<String>,
     pub to_addresses: String, // JSON array
@@ -56,6 +60,26 @@ pub struct DbEmail {
     pub deleted_at: Option<i64>,
 }
 
+/// Email folder enum
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum EmailFolder {
+    Inbox,
+    Sent,
+    Drafts,
+    Phishing,
+}
+
+impl EmailFolder {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EmailFolder::Inbox => "inbox",
+            EmailFolder::Sent => "sent",
+            EmailFolder::Drafts => "drafts",
+            EmailFolder::Phishing => "phishing",
+        }
+    }
+}
+
 /// Attachment stored in database
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DbAttachment {
@@ -72,4 +96,14 @@ pub struct DbAttachment {
     pub is_downloaded: bool,
     /// 本地缓存文件路径
     pub local_path: Option<String>,
+}
+
+/// Draft email update fields
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DraftUpdates {
+    pub to_addresses: String,  // JSON array
+    pub cc_addresses: String,  // JSON array
+    pub subject: Option<String>,
+    pub body_text: Option<String>,
+    pub body_html: Option<String>,
 }
