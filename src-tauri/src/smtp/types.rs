@@ -56,8 +56,10 @@ pub struct EmailMessage {
     pub cc_addresses: Option<Vec<String>>,
     /// Email subject
     pub subject: String,
-    /// Email body (plain text)
+    /// Email body (plain text, fallback)
     pub body: String,
+    /// Email body HTML (optional, for rich content)
+    pub body_html: Option<String>,
 }
 
 /// Email send result

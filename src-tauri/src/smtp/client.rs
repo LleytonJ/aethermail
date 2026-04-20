@@ -3,7 +3,7 @@
 //! SMTP client using lettre crate for email sending.
 
 use lettre::{
-    message::Message,
+    message::{Message, MultiPart, SinglePart, header},
     transport::smtp::authentication::Credentials,
     AsyncSmtpTransport, Tokio1Executor, AsyncTransport,
 };
@@ -148,10 +148,30 @@ impl SmtpClient {
         // Set subject
         builder = builder.subject(&email.subject);
 
-        // Set body
-        let msg = builder
-            .body(email.body.clone())
-            .map_err(|e| format!("邮件正文构建失败: {}", e))?;
+        // Build body - multipart if HTML is provided
+        let msg = if let Some(html) = &email.body_html {
+            // Create multipart MIME message (text + HTML)
+            let text_part = SinglePart::builder()
+                .header(header::ContentType::TEXT_PLAIN)
+                .body(email.body.clone());
+
+            let html_part = SinglePart::builder()
+                .header(header::ContentType::TEXT_HTML)
+                .body(html.clone());
+
+            let multipart = MultiPart::alternative()
+                .singlepart(text_part)
+                .singlepart(html_part);
+
+            builder
+                .multipart(multipart)
+                .map_err(|e| format!("邮件正文构建失败: {}", e))?
+        } else {
+            // Plain text only
+            builder
+                .body(email.body.clone())
+                .map_err(|e| format!("邮件正文构建失败: {}", e))?
+        };
 
         Ok(msg)
     }

@@ -202,6 +202,51 @@
           <span>AI Provider 未配置，请先在 AI 设置中完成配置</span>
         </div>
       </div>
+
+      <!-- Divider -->
+      <div class="border-t border-border-primary my-4" />
+
+      <!-- Signature Settings -->
+      <div class="text-xs font-medium text-text-secondary mb-3">
+        签名设置
+      </div>
+
+      <div class="flex items-center justify-between py-2">
+        <div>
+          <div class="text-sm text-text-primary">启用签名</div>
+          <div class="text-xs text-text-tertiary mt-0.5">
+            发送邮件时自动附加签名到正文底部
+          </div>
+        </div>
+        <button
+          :class="[
+            'relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors',
+            form.signatureEnabled ? 'bg-accent' : 'bg-bg-tertiary'
+          ]"
+          @click="form.signatureEnabled = !form.signatureEnabled"
+        >
+          <span
+            :class="[
+              'inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform',
+              form.signatureEnabled ? 'translate-x-4.5' : 'translate-x-0.5'
+            ]"
+          />
+        </button>
+      </div>
+
+      <!-- Signature Editor -->
+      <div v-if="form.signatureEnabled" class="mt-3">
+        <label class="block text-xs font-medium text-text-secondary mb-1">
+          签名内容
+        </label>
+        <RichTextEditor
+          v-model="form.signatureHtml"
+          placeholder="输入签名内容..."
+          :min-height="120"
+          :editable="form.signatureEnabled"
+          :show-toolbar="true"
+        />
+      </div>
     </div>
 
     <!-- Actions -->
@@ -232,8 +277,9 @@ import { ref, onMounted } from 'vue'
 import { Eye, EyeOff, AlertCircle } from 'lucide-vue-next'
 import { useAccountStore, type Account, type ProtocolType } from '@/stores/account'
 import { getDefaultPop3Port, getDefaultImapPort, getDefaultSmtpPort, type SecurityType } from '@/services/email/providerPresets'
-import { updatePhishingDetection, updateAccount as updateAccountService } from '@/services/email/accountService'
+import { updatePhishingDetection, updateAccount as updateAccountService, updateSignature } from '@/services/email/accountService'
 import { isAiAvailable } from '@/services/ai/aiConfig'
+import RichTextEditor from '@/components/ui/RichTextEditor.vue'
 
 interface Props {
   account: Account | null
@@ -262,7 +308,9 @@ const form = ref({
   smtpHost: '',
   smtpPort: 25,
   smtpSecurity: 'none' as SecurityType,
-  phishingDetectionEnabled: false
+  phishingDetectionEnabled: false,
+  signatureEnabled: false,
+  signatureHtml: ''
 })
 
 onMounted(async () => {
@@ -277,6 +325,8 @@ onMounted(async () => {
     form.value.smtpPort = props.account.smtpPort || (props.account.protocol === 'imap' ? 465 : 25)
     form.value.smtpSecurity = props.account.smtpUseSsl ? 'ssl' : 'none'
     form.value.phishingDetectionEnabled = props.account.phishingDetectionEnabled || false
+    form.value.signatureHtml = props.account.signatureHtml || ''
+    form.value.signatureEnabled = (props.account.signatureHtml && props.account.signatureHtml.length > 0) || false
   }
 
   // Check AI availability
@@ -336,6 +386,15 @@ async function handleSave() {
       const updated = await updatePhishingDetection(props.account.id, form.value.phishingDetectionEnabled)
       if (account) {
         account.phishingDetectionEnabled = updated.phishingDetectionEnabled
+      }
+    }
+
+    // Update signature
+    const signatureToSave = form.value.signatureEnabled ? form.value.signatureHtml : ''
+    if (signatureToSave !== (props.account.signatureHtml || '')) {
+      const updated = await updateSignature(props.account.id, signatureToSave)
+      if (account) {
+        account.signatureHtml = updated.signatureHtml
       }
     }
 

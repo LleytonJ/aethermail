@@ -116,7 +116,8 @@ export async function addMockAccount(
     smtpHost: '',
     smtpPort: 465,
     smtpUseSsl: true,
-    phishingDetectionEnabled: false
+    phishingDetectionEnabled: false,
+    signatureHtml: ''
   }
 
   // 将其他账户设为非激活

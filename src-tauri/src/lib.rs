@@ -68,6 +68,7 @@ pub fn run() {
             commands::update_account,
             commands::delete_account,
             commands::update_account_phishing_detection,
+            commands::update_account_signature,
             // AI commands
             commands::get_ai_config,
             commands::save_ai_config,

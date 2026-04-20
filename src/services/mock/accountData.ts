@@ -19,7 +19,8 @@ export const MOCK_ACCOUNTS: Account[] = [
     smtpHost: 'smtp.example.com',
     smtpPort: 465,
     smtpUseSsl: true,
-    phishingDetectionEnabled: false
+    phishingDetectionEnabled: false,
+    signatureHtml: ''
   },
   {
     id: 'account-2',
@@ -36,7 +37,8 @@ export const MOCK_ACCOUNTS: Account[] = [
     smtpHost: 'smtp.gmail.com',
     smtpPort: 465,
     smtpUseSsl: true,
-    phishingDetectionEnabled: false
+    phishingDetectionEnabled: false,
+    signatureHtml: ''
   }
 ]
 

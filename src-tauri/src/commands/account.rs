@@ -55,6 +55,9 @@ pub struct AccountConfig {
     /// 是否启用钓鱼邮件检测
     #[serde(default)]
     pub phishing_detection_enabled: bool,
+    /// 签名 HTML 内容
+    #[serde(default)]
+    pub signature_html: String,
 }
 
 fn default_imap_port() -> u16 { 993 }
@@ -81,6 +84,7 @@ impl Default for AccountConfig {
             smtp_use_ssl: true,
             is_active: false,
             phishing_detection_enabled: false,
+            signature_html: String::new(),
         }
     }
 }
@@ -228,6 +232,7 @@ pub async fn add_pop3_account(
         smtp_use_ssl,
         is_active: true,
         phishing_detection_enabled: false,
+        signature_html: String::new(),
     };
 
     // Load existing accounts
@@ -281,6 +286,7 @@ pub async fn add_imap_account(
         smtp_use_ssl,
         is_active: true,
         phishing_detection_enabled: false,
+        signature_html: String::new(),
     };
 
     // Load existing accounts
@@ -435,6 +441,28 @@ pub fn update_account_phishing_detection(
         .ok_or_else(|| "账户不存在".to_string())?;
 
     account.phishing_detection_enabled = phishing_detection_enabled;
+
+    let updated = account.clone();
+    save_accounts_file(&accounts_file)?;
+
+    Ok(updated)
+}
+
+/// Update account signature HTML
+#[tauri::command]
+pub fn update_account_signature(
+    id: String,
+    signature_html: String,
+) -> Result<AccountConfig, String> {
+    let mut accounts_file = load_accounts_file()?;
+
+    let account = accounts_file
+        .accounts
+        .iter_mut()
+        .find(|a| a.id == id)
+        .ok_or_else(|| "账户不存在".to_string())?;
+
+    account.signature_html = signature_html;
 
     let updated = account.clone();
     save_accounts_file(&accounts_file)?;

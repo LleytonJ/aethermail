@@ -5,7 +5,9 @@
       v-if="html"
       ref="htmlFrame"
       class="email-iframe"
+      :style="{ height: iframeHeight + 'px' }"
       sandbox="allow-same-origin"
+      scrolling="no"
       @load="onFrameLoad"
     ></iframe>
 
@@ -51,7 +53,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, nextTick } from 'vue'
+import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import DOMPurify from 'dompurify'
 import { Mail } from 'lucide-vue-next'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -68,6 +70,7 @@ const props = defineProps<Props>()
 const htmlFrame = ref<HTMLIFrameElement | null>(null)
 const showLinkDialog = ref(false)
 const pendingLinkUrl = ref('')
+const iframeHeight = ref(200) // 动态 iframe 高度
 
 // 邮件内容的基础样式（浅色背景适配黑色文字邮件）
 const emailStyles = `
@@ -83,7 +86,7 @@ const emailStyles = `
     color: #1a1a1a;
   }
   /* 只设置图片和表格的基础约束，避免溢出 */
-  img { max-width: 100%; height: auto; }
+  img { max-width: 100%; height: auto; display: block; }
   table { max-width: 100%; }
   pre { overflow-x: auto; }
 `
@@ -146,12 +149,66 @@ function writeFrameContent() {
 
     // 内容写入后设置链接点击监听
     setupLinkClickListener(doc)
+
+    // 多次尝试更新高度，确保 DOM 完全渲染
+    requestAnimationFrame(() => updateIframeHeight())
+    setTimeout(() => updateIframeHeight(), 50)
+    setTimeout(() => updateIframeHeight(), 200)
   }
+}
+
+// 更新 iframe 高度以适应内容
+function updateIframeHeight() {
+  if (!htmlFrame.value) return
+
+  const doc = htmlFrame.value.contentDocument
+  if (!doc || !doc.body) return
+
+  // 尝试多种方法获取高度，确保准确
+  const bodyHeight = doc.body.scrollHeight
+  const docHeight = doc.documentElement.scrollHeight
+  const offsetHeight = doc.documentElement.offsetHeight
+
+  // 取最大值，确保不截断内容
+  const height = Math.max(bodyHeight, docHeight, offsetHeight)
+
+  // 设置最小高度 200px
+  iframeHeight.value = Math.max(200, height)
+}
+
+// ResizeObserver 用于监听 iframe 内容高度变化（如图片加载后）
+let resizeObserver: ResizeObserver | null = null
+
+function setupResizeObserver() {
+  if (!htmlFrame.value) return
+
+  const doc = htmlFrame.value.contentDocument
+  if (!doc || !doc.body) return
+
+  // 清理旧的 observer
+  if (resizeObserver) {
+    resizeObserver.disconnect()
+  }
+
+  resizeObserver = new ResizeObserver(() => {
+    updateIframeHeight()
+  })
+
+  resizeObserver.observe(doc.body)
+
+  // 监听图片加载完成后更新高度
+  const images = doc.querySelectorAll('img')
+  images.forEach(img => {
+    if (!img.complete) {
+      img.addEventListener('load', updateIframeHeight)
+    }
+  })
 }
 
 // iframe 加载完成后写入内容
 function onFrameLoad() {
   writeFrameContent()
+  setupResizeObserver()
 }
 
 // 监听 html prop 变化
@@ -159,6 +216,7 @@ watch(() => props.html, async () => {
   await nextTick()
   if (htmlFrame.value && props.html) {
     writeFrameContent()
+    setupResizeObserver()
   }
 })
 
@@ -171,7 +229,16 @@ onMounted(async () => {
     const doc = htmlFrame.value.contentDocument
     if (doc && doc.body && doc.body.innerHTML === '') {
       writeFrameContent()
+      setupResizeObserver()
     }
+  }
+})
+
+// 组件卸载时清理 ResizeObserver
+onUnmounted(() => {
+  if (resizeObserver) {
+    resizeObserver.disconnect()
+    resizeObserver = null
   }
 })
 
@@ -193,15 +260,11 @@ function handleCancelLink() {
 
 <style scoped>
 .email-body-container {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
+  /* 不设置固定高度，让内容自然撑开，父容器处理滚动 */
 }
 
 .email-iframe {
   width: 100%;
-  flex: 1;
-  min-height: 200px;
   border: none;
   background: #cbd5e1;
   display: block;
@@ -209,7 +272,5 @@ function handleCancelLink() {
 
 .email-text-content {
   color: var(--text-secondary);
-  flex: 1;
-  overflow-y: auto;
 }
 </style>

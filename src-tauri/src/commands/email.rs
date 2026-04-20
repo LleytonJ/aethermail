@@ -1007,6 +1007,8 @@ pub async fn send_email(
     cc_addresses: Option<Vec<String>>,
     subject: String,
     body: String,
+    body_html: Option<String>,
+    signature_html: Option<String>,
 ) -> Result<SendEmailResult, String> {
     // Get account configuration
     let accounts = get_accounts()?;
@@ -1033,6 +1035,35 @@ pub async fn send_email(
 
     let client = SmtpClient::new(config, credentials);
 
+    // Process body HTML with signature
+    let final_body_html = if let Some(html) = body_html {
+        // Append signature if provided
+        if let Some(sig) = signature_html {
+            if !sig.is_empty() {
+                Some(format!(
+                    "{}<div style=\"margin-top:16px;border-top:1px solid #e5e5e5;padding-top:12px\">{}</div>",
+                    html, sig
+                ))
+            } else {
+                Some(html)
+            }
+        } else {
+            Some(html)
+        }
+    } else if let Some(sig) = signature_html {
+        // If no HTML body but signature exists, create HTML with signature
+        if !sig.is_empty() {
+            Some(format!(
+                "<p>{}</p><div style=\"margin-top:16px;border-top:1px solid #e5e5e5;padding-top:12px\">{}</div>",
+                body.replace("\n", "<br/>"), sig
+            ))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // Create email message
     let email = EmailMessage {
         from_address: account.email.clone(),
@@ -1041,6 +1072,7 @@ pub async fn send_email(
         cc_addresses,
         subject,
         body,
+        body_html: final_body_html,
     };
 
     // Send email

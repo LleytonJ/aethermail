@@ -134,7 +134,7 @@
       <EmailHeader v-if="currentEmail" :email="currentEmail" />
 
       <!-- 邮件正文 -->
-      <div class="flex-1 overflow-y-auto hide-scrollbar">
+      <div class="flex-1 overflow-y-auto">
         <EmailBody v-if="currentEmail" :html="currentEmail.bodyHtml ?? undefined" :is-phishing="currentEmail.isPhishing" />
       </div>
 

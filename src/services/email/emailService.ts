@@ -338,14 +338,18 @@ export async function sendEmail(
   toAddresses: string[],
   ccAddresses: string[] | null,
   subject: string,
-  body: string
+  body: string,
+  bodyHtml?: string | null,
+  signatureHtml?: string | null
 ): Promise<SendEmailResult> {
   console.log('[emailService] sendEmail - 开始发送', {
     accountId,
     toAddresses,
     ccAddresses,
     subject,
-    bodyLength: body.length
+    bodyLength: body.length,
+    hasHtml: !!bodyHtml,
+    hasSignature: !!signatureHtml
   })
 
   try {
@@ -354,7 +358,9 @@ export async function sendEmail(
       toAddresses,
       ccAddresses,
       subject,
-      body
+      body,
+      bodyHtml: bodyHtml || null,
+      signatureHtml: signatureHtml || null
     })
 
     console.log('[emailService] sendEmail - 发送结果:', result)

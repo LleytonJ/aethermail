@@ -62,6 +62,7 @@ export interface AccountConfig {
   smtp_use_ssl: boolean
   is_active: boolean
   phishing_detection_enabled: boolean
+  signature_html: string
 }
 
 /**
@@ -83,6 +84,7 @@ export interface Account {
   smtpPort: number
   smtpUseSsl: boolean
   phishingDetectionEnabled: boolean
+  signatureHtml: string
 }
 
 /**
@@ -259,7 +261,8 @@ function convertToAccount(config: AccountConfig): Account {
     smtpHost: config.smtp_host || '',
     smtpPort: config.smtp_port || 465,
     smtpUseSsl: config.smtp_use_ssl ?? true,
-    phishingDetectionEnabled: config.phishing_detection_enabled
+    phishingDetectionEnabled: config.phishing_detection_enabled,
+    signatureHtml: config.signature_html || ''
   }
 }
 
@@ -330,4 +333,24 @@ export async function updatePhishingDetection(id: string, enabled: boolean): Pro
     phishingDetectionEnabled: enabled
   })
   return convertToAccount(result)
+}
+
+/**
+ * 更新账户签名 HTML
+ */
+export async function updateSignature(id: string, signatureHtml: string): Promise<Account> {
+  const result = await invoke<AccountConfig>('update_account_signature', {
+    id,
+    signatureHtml
+  })
+  return convertToAccount(result)
+}
+
+/**
+ * 获取账户签名
+ */
+export async function getSignature(id: string): Promise<string> {
+  const accounts = await getAccounts()
+  const account = accounts.find(a => a.id === id)
+  return account?.signatureHtml || ''
 }

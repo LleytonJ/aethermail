@@ -59,15 +59,33 @@
         <label class="block text-xs font-medium text-text-secondary mb-1">
           正文
         </label>
-        <textarea
+        <RichTextEditor
           v-model="form.body"
           placeholder="邮件内容..."
-          class="w-full h-64 px-3 py-2 bg-bg-secondary border border-border-primary rounded-lg text-sm text-text-primary outline-none focus:border-accent transition-colors resize-none"
-          :class="{ 'border-danger': errors.body }"
+          :min-height="256"
         />
         <p v-if="errors.body" class="text-xs text-danger mt-1">
           {{ errors.body }}
         </p>
+      </div>
+
+      <!-- 签名开关 -->
+      <div v-if="showSignatureToggle" class="flex items-center justify-between py-2 bg-bg-secondary rounded-lg px-3">
+        <div class="text-sm text-text-secondary">附加签名</div>
+        <button
+          :class="[
+            'relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors',
+            form.includeSignature ? 'bg-accent' : 'bg-bg-tertiary'
+          ]"
+          @click="form.includeSignature = !form.includeSignature"
+        >
+          <span
+            :class="[
+              'inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform',
+              form.includeSignature ? 'translate-x-4.5' : 'translate-x-0.5'
+            ]"
+          />
+        </button>
       </div>
     </div>
 
@@ -112,6 +130,7 @@ import { useAccountStore } from '@/stores/account'
 import { useNotificationStore } from '@/stores/notification'
 import { sendEmail } from '@/services/email/emailService'
 import AddressInput from '@/components/ui/AddressInput.vue'
+import RichTextEditor from '@/components/ui/RichTextEditor.vue'
 
 interface Props {
   // 回复模式：预填充收件人、主题、引用正文
@@ -142,7 +161,14 @@ const form = ref({
   to: [] as string[],
   cc: [] as string[],
   subject: '',
-  body: ''
+  body: '',
+  includeSignature: true
+})
+
+// 签名开关显示条件
+const showSignatureToggle = computed(() => {
+  const account = accountStore.activeAccount
+  return account && account.signatureHtml && account.signatureHtml.length > 0
 })
 
 // 验证错误
@@ -214,8 +240,10 @@ function validateForm(): boolean {
     return false
   }
 
-  // 验证正文
-  if (!form.value.body.trim()) {
+  // 验证正文（支持 HTML 内容）
+  // Strip HTML tags to check if there's actual content
+  const textContent = form.value.body.replace(/<[^>]*>/g, '').trim()
+  if (!textContent && !form.value.body.trim()) {
     errors.value.body = '请输入邮件内容'
     return false
   }
@@ -243,13 +271,20 @@ async function handleSend() {
   sendingState.value = 'sending'
   errorMessage.value = ''
 
+  // 获取签名 HTML（如果启用）
+  const signatureHtml = form.value.includeSignature && account.signatureHtml
+    ? account.signatureHtml
+    : null
+
   try {
     const result = await sendEmail(
       account.id,
       form.value.to,
       form.value.cc.length > 0 ? form.value.cc : null,
       form.value.subject,
-      form.value.body
+      form.value.body, // plain text fallback
+      form.value.body, // HTML body (from rich text editor)
+      signatureHtml
     )
 
     if (result.success) {
@@ -284,3 +319,9 @@ function handleClose() {
   }
 }
 </script>
+
+<style scoped>
+.translate-x-4.5 {
+  transform: translateX(18px);
+}
+</style>
