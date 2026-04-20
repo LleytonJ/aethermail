@@ -9,8 +9,8 @@ use tauri::Emitter;
 
 use crate::pop3::{Pop3Client, Pop3Config, Pop3Credentials, ParsedEmail, EmailAttachment};
 use crate::imap::{ImapClient, ImapConfig, ImapCredentials};
-use crate::smtp::{SmtpClient, SmtpConfig, SmtpCredentials, EmailMessage, SendEmailResult};
-use crate::storage::{Database, DbEmail, DbAttachment, DraftUpdates};
+use crate::smtp::{SmtpClient, SmtpConfig, SmtpCredentials, EmailMessage, SendEmailResult, AttachmentData};
+use crate::storage::{Database, DbEmail, DbAttachment, DbDraftAttachment, DraftUpdates};
 use crate::commands::account::{get_accounts, ProtocolType};
 use crate::ai::{AiClient, is_ai_available};
 use crate::utils::html_extractor::HtmlExtractor;
@@ -1121,6 +1121,16 @@ pub async fn get_draft_count(account_id: String) -> Result<i32, String> {
     db.get_draft_count(&account_id).await
 }
 
+/// Draft attachment data from frontend
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DraftAttachmentData {
+    pub id: String,
+    pub filename: String,
+    pub content_type: Option<String>,
+    pub file_path: String,
+    pub file_size: i64,
+}
+
 /// Draft data for creating/updating drafts
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DraftData {
@@ -1130,6 +1140,7 @@ pub struct DraftData {
     pub subject: Option<String>,
     pub body_text: Option<String>,
     pub body_html: Option<String>,
+    pub attachments: Option<Vec<DraftAttachmentData>>,
 }
 
 /// Create a draft email
@@ -1147,6 +1158,9 @@ pub async fn create_draft(draft: DraftData) -> Result<String, String> {
     let draft_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp();
 
+    // 判断是否有附件
+    let has_attachment = draft.attachments.is_some() && !draft.attachments.as_ref().unwrap().is_empty();
+
     let db_draft = DbEmail {
         id: format!("draft-{}", draft_id),
         account_id: draft.account_id.clone(),
@@ -1163,7 +1177,7 @@ pub async fn create_draft(draft: DraftData) -> Result<String, String> {
         date: now,
         is_read: true,
         is_starred: false,
-        has_attachment: false,
+        has_attachment,
         is_phishing: false,
         phishing_reasons: None,
         user_overridden: false,
@@ -1171,6 +1185,22 @@ pub async fn create_draft(draft: DraftData) -> Result<String, String> {
     };
 
     db.create_draft(&db_draft).await?;
+
+    // 保存草稿附件（使用草稿邮件的 id）
+    if let Some(attachments) = &draft.attachments {
+        for att in attachments {
+            let db_att = DbDraftAttachment {
+                id: att.id.clone(),
+                email_id: db_draft.id.clone(),  // 使用草稿邮件的 id
+                filename: att.filename.clone(),
+                content_type: att.content_type.clone(),
+                file_path: att.file_path.clone(),
+                file_size: att.file_size,
+                created_at: now,
+            };
+            db.save_draft_attachment(&db_att).await?;
+        }
+    }
 
     Ok(draft_id)
 }
@@ -1180,15 +1210,42 @@ pub async fn create_draft(draft: DraftData) -> Result<String, String> {
 pub async fn update_draft(draft_id: String, draft: DraftData) -> Result<(), String> {
     let db = get_db().await?;
 
+    // 判断是否有附件
+    let has_attachment = draft.attachments.is_some() && !draft.attachments.as_ref().unwrap().is_empty();
+
     let updates = DraftUpdates {
         to_addresses: serde_json::to_string(&draft.to_addresses).unwrap_or_default(),
         cc_addresses: serde_json::to_string(&draft.cc_addresses).unwrap_or_default(),
         subject: draft.subject,
         body_text: draft.body_text,
         body_html: draft.body_html,
+        has_attachment,
     };
 
-    db.update_draft(&draft_id, &updates).await
+    db.update_draft(&draft_id, &updates).await?;
+
+    // 获取草稿邮件的 id（用于附件查询）
+    let email_id = format!("draft-{}", draft_id);
+
+    // 删除旧附件并保存新附件
+    db.delete_draft_attachments(&email_id).await?;
+    if let Some(attachments) = &draft.attachments {
+        let now = chrono::Utc::now().timestamp();
+        for att in attachments {
+            let db_att = DbDraftAttachment {
+                id: att.id.clone(),
+                email_id: email_id.clone(),  // 使用草稿邮件的 id
+                filename: att.filename.clone(),
+                content_type: att.content_type.clone(),
+                file_path: att.file_path.clone(),
+                file_size: att.file_size,
+                created_at: now,
+            };
+            db.save_draft_attachment(&db_att).await?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Delete a draft email
@@ -1257,6 +1314,41 @@ pub async fn send_draft(
         None
     };
 
+    // 读取草稿附件（使用草稿邮件的 id）
+    let draft_attachments = db.get_draft_attachments(&draft.id).await?;
+    let attachments: Vec<AttachmentData> = draft_attachments
+        .into_iter()
+        .filter_map(|att| {
+            // 检查文件是否存在
+            if !std::path::Path::new(&att.file_path).exists() {
+                log::warn!("草稿附件文件不存在: {}", att.file_path);
+                return None;
+            }
+
+            // 读取文件内容并编码为 Base64
+            match std::fs::read(&att.file_path) {
+                Ok(content) => {
+                    use base64::{Engine as _, engine::general_purpose::STANDARD};
+                    let encoded = STANDARD.encode(&content);
+                    let filename = att.filename.clone();
+                    let content_type = att.content_type.clone().unwrap_or_else(|| {
+                        // 根据 filename 推断 MIME 类型
+                        infer_mime_type(&filename)
+                    });
+                    Some(AttachmentData {
+                        filename,
+                        content_type,
+                        content: encoded,
+                    })
+                }
+                Err(e) => {
+                    log::warn!("读取草稿附件文件失败: {} - {}", att.file_path, e);
+                    None
+                }
+            }
+        })
+        .collect();
+
     // 创建邮件消息
     let email = EmailMessage {
         from_address: account.email.clone(),
@@ -1266,6 +1358,7 @@ pub async fn send_draft(
         subject: draft.subject.clone().unwrap_or_default(),
         body: draft.body_text.clone().unwrap_or_default(),
         body_html: final_body_html,
+        attachments: if attachments.is_empty() { None } else { Some(attachments) },
     };
 
     // 发送邮件
@@ -1280,6 +1373,42 @@ pub async fn send_draft(
     Ok(result)
 }
 
+/// Infer MIME type from filename
+fn infer_mime_type(filename: &str) -> String {
+    let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "pdf" => "application/pdf",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "zip" => "application/zip",
+        "rar" => "application/vnd.rar",
+        "7z" => "application/x-7z-compressed",
+        "tar" => "application/x-tar",
+        "gz" => "application/gzip",
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "txt" => "text/plain",
+        "html" | "htm" => "text/html",
+        "csv" => "text/csv",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "mp3" => "audio/mpeg",
+        "mp4" => "video/mp4",
+        "avi" => "video/x-msvideo",
+        "mov" => "video/quicktime",
+        "wav" => "audio/wav",
+        _ => "application/octet-stream",
+    }.to_string()
+}
+
 /// Get draft detail by draft_id
 #[tauri::command]
 pub async fn get_draft_detail(draft_id: String) -> Result<Option<EmailDetail>, String> {
@@ -1287,6 +1416,22 @@ pub async fn get_draft_detail(draft_id: String) -> Result<Option<EmailDetail>, S
     let draft = db.get_draft_by_id(&draft_id).await?;
 
     if let Some(e) = draft {
+        // 获取草稿附件（使用草稿邮件的 id）
+        let draft_attachments = db.get_draft_attachments(&e.id).await?;
+        let attachments: Vec<AttachmentInfo> = draft_attachments
+            .into_iter()
+            .map(|att| {
+                let filename = att.filename.clone();
+                let mime_type = att.content_type.clone().unwrap_or_else(|| infer_mime_type(&filename));
+                AttachmentInfo {
+                    id: att.id,
+                    filename,
+                    mime_type,
+                    size: att.file_size,
+                }
+            })
+            .collect();
+
         Ok(Some(EmailDetail {
             id: e.id,
             account_id: e.account_id,
@@ -1301,13 +1446,116 @@ pub async fn get_draft_detail(draft_id: String) -> Result<Option<EmailDetail>, S
             is_read: e.is_read,
             is_starred: e.is_starred,
             has_attachment: e.has_attachment,
-            attachments: vec![], // 草稿暂不支持附件
+            attachments,
             is_phishing: false,
             phishing_reasons: None,
         }))
     } else {
         Ok(None)
     }
+}
+
+/// Get draft attachments for frontend
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DraftAttachmentInfo {
+    pub id: String,
+    pub filename: String,
+    pub content_type: Option<String>,
+    pub file_path: String,
+    pub file_size: i64,
+}
+
+/// Get draft attachments by draft_id
+#[tauri::command]
+pub async fn get_draft_attachments(draft_id: String) -> Result<Vec<DraftAttachmentInfo>, String> {
+    let db = get_db().await?;
+
+    // 转换 draft_id 为草稿邮件的 id
+    let email_id = format!("draft-{}", draft_id);
+    log::info!("[get_draft_attachments] draft_id={}, email_id={}", draft_id, email_id);
+
+    let attachments = db.get_draft_attachments(&email_id).await?;
+    log::info!("[get_draft_attachments] 找到 {} 个附件", attachments.len());
+
+    Ok(attachments
+        .into_iter()
+        .map(|att| DraftAttachmentInfo {
+            id: att.id,
+            filename: att.filename,
+            content_type: att.content_type,
+            file_path: att.file_path,
+            file_size: att.file_size,
+        })
+        .collect())
+}
+
+/// Debug: 查看数据库中所有草稿附件
+#[tauri::command]
+pub async fn debug_list_all_draft_attachments() -> Result<Vec<(String, String, String)>, String> {
+    let db = get_db().await?;
+
+    // 直接使用数据库的公开方法来查询
+    // 先获取所有草稿邮件的 id，然后查询每个的附件
+    let rows = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT id, email_id, filename FROM draft_attachments ORDER BY created_at DESC LIMIT 20"
+    )
+    .fetch_all(db.get_pool())
+    .await
+    .map_err(|e| format!("查询失败: {}", e))?;
+
+    Ok(rows)
+}
+
+/// Debug: 查看草稿邮件的 id 和 draft_id
+#[tauri::command]
+pub async fn debug_list_draft_email_ids() -> Result<Vec<(String, Option<String>)>, String> {
+    let db = get_db().await?;
+
+    let rows = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT id, draft_id FROM emails WHERE folder = 'drafts' ORDER BY date DESC LIMIT 10"
+    )
+    .fetch_all(db.get_pool())
+    .await
+    .map_err(|e| format!("查询失败: {}", e))?;
+
+    Ok(rows)
+}
+#[tauri::command]
+pub async fn read_file_for_attachment(file_path: String) -> Result<AttachmentData, String> {
+    // 检查文件是否存在
+    if !std::path::Path::new(&file_path).exists() {
+        return Err(format!("文件不存在: {}", file_path));
+    }
+
+    // 获取文件名
+    let filename = std::path::Path::new(&file_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    // 读取文件内容
+    let content = std::fs::read(&file_path)
+        .map_err(|e| format!("读取文件失败: {}", e))?;
+
+    // 编码为 Base64
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let encoded = STANDARD.encode(&content);
+
+    // 推断 MIME 类型
+    let content_type = infer_mime_type(&filename);
+
+    Ok(AttachmentData {
+        filename,
+        content_type,
+        content: encoded,
+    })
+}
+
+/// Validate attachment file path (check if file exists)
+#[tauri::command]
+pub async fn validate_attachment_path(file_path: String) -> Result<bool, String> {
+    Ok(std::path::Path::new(&file_path).exists())
 }
 
 /// Send an email
@@ -1320,6 +1568,7 @@ pub async fn send_email(
     body: String,
     body_html: Option<String>,
     signature_html: Option<String>,
+    attachments: Option<Vec<AttachmentData>>,
 ) -> Result<SendEmailResult, String> {
     // Get account configuration
     let accounts = get_accounts()?;
@@ -1375,6 +1624,9 @@ pub async fn send_email(
         None
     };
 
+    // 判断是否有附件
+    let has_attachment = attachments.is_some() && !attachments.as_ref().unwrap().is_empty();
+
     // Create email message
     let email = EmailMessage {
         from_address: account.email.clone(),
@@ -1384,6 +1636,7 @@ pub async fn send_email(
         subject: subject.clone(),
         body: body.clone(),
         body_html: final_body_html.clone(),
+        attachments,
     };
 
     // Send email
@@ -1411,7 +1664,7 @@ pub async fn send_email(
             date: now,
             is_read: true,
             is_starred: false,
-            has_attachment: false,
+            has_attachment,
             is_phishing: false,
             phishing_reasons: None,
             user_overridden: false,

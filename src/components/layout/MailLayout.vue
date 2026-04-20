@@ -32,6 +32,7 @@
           :forward="composeStore.state.forward"
           :draft-id="composeStore.state.draft?.draftId"
           :draft-data="composeStore.state.draft"
+          :draft-attachments="composeStore.state.draft?.attachments"
           @close="composeStore.close()"
           @sent="handleEmailSent"
           @saved="handleDraftSaved"

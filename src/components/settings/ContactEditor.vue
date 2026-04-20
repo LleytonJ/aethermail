@@ -84,7 +84,7 @@
 
     <!-- 删除确认对话框 -->
     <ConfirmDialog
-      v-if="showDeleteConfirm"
+      :is-open="showDeleteConfirm"
       title="删除联系人"
       message="确定要删除该联系人吗？此操作不可撤销。"
       confirm-text="删除"

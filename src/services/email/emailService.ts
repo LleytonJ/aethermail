@@ -345,6 +345,26 @@ export interface SendEmailResult {
 }
 
 /**
+ * 附件数据（用于发送）
+ */
+export interface AttachmentData {
+  filename: string
+  content_type: string
+  content: string  // Base64 编码内容
+}
+
+/**
+ * 草稿附件数据
+ */
+export interface DraftAttachmentData {
+  id: string
+  filename: string
+  content_type: string | null
+  file_path: string
+  file_size: number
+}
+
+/**
  * 发送邮件
  */
 export async function sendEmail(
@@ -354,7 +374,8 @@ export async function sendEmail(
   subject: string,
   body: string,
   bodyHtml?: string | null,
-  signatureHtml?: string | null
+  signatureHtml?: string | null,
+  attachments?: AttachmentData[] | null
 ): Promise<SendEmailResult> {
   console.log('[emailService] sendEmail - 开始发送', {
     accountId,
@@ -363,7 +384,8 @@ export async function sendEmail(
     subject,
     bodyLength: body.length,
     hasHtml: !!bodyHtml,
-    hasSignature: !!signatureHtml
+    hasSignature: !!signatureHtml,
+    attachmentCount: attachments?.length || 0
   })
 
   try {
@@ -374,7 +396,8 @@ export async function sendEmail(
       subject,
       body,
       bodyHtml: bodyHtml || null,
-      signatureHtml: signatureHtml || null
+      signatureHtml: signatureHtml || null,
+      attachments: attachments || null
     })
 
     console.log('[emailService] sendEmail - 发送结果:', result)
@@ -524,6 +547,7 @@ export interface DraftData {
   subject: string | null
   bodyText: string | null
   bodyHtml: string | null
+  attachments?: DraftAttachmentData[] | null
 }
 
 /**
@@ -538,7 +562,14 @@ export async function createDraft(draft: DraftData): Promise<string> {
       cc_addresses: draft.ccAddresses,
       subject: draft.subject,
       body_text: draft.bodyText,
-      body_html: draft.bodyHtml
+      body_html: draft.bodyHtml,
+      attachments: draft.attachments?.map(a => ({
+        id: a.id,
+        filename: a.filename,
+        content_type: a.content_type,
+        file_path: a.file_path,
+        file_size: a.file_size
+      })) || null
     }
   })
 }
@@ -555,7 +586,14 @@ export async function updateDraft(draftId: string, draft: DraftData): Promise<vo
       cc_addresses: draft.ccAddresses,
       subject: draft.subject,
       body_text: draft.bodyText,
-      body_html: draft.bodyHtml
+      body_html: draft.bodyHtml,
+      attachments: draft.attachments?.map(a => ({
+        id: a.id,
+        filename: a.filename,
+        content_type: a.content_type,
+        file_path: a.file_path,
+        file_size: a.file_size
+      })) || null
     }
   })
 }
@@ -608,4 +646,32 @@ export async function getDraftDetail(draftId: string): Promise<EmailDetail | nul
     is_phishing: false,
     phishing_reasons: null
   }
+}
+
+/**
+ * 获取草稿附件列表
+ */
+export async function getDraftAttachments(draftId: string): Promise<DraftAttachmentData[]> {
+  const result = await invoke<any[]>('get_draft_attachments', { draftId })
+  return result.map(a => ({
+    id: a.id,
+    filename: a.filename,
+    content_type: a.content_type,
+    file_path: a.file_path,
+    file_size: a.file_size
+  }))
+}
+
+/**
+ * 读取文件内容用于附件（返回 Base64 编码内容）
+ */
+export async function readFileForAttachment(filePath: string): Promise<AttachmentData> {
+  return invoke<AttachmentData>('read_file_for_attachment', { filePath })
+}
+
+/**
+ * 验证附件文件路径是否存在
+ */
+export async function validateAttachmentPath(filePath: string): Promise<boolean> {
+  return invoke<boolean>('validate_attachment_path', { filePath })
 }

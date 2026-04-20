@@ -83,7 +83,7 @@
 import { ref, computed } from 'vue'
 import { useMailboxStore } from '@/stores/mailbox'
 import { useComposeStore } from '@/stores/compose'
-import { getDraftDetail } from '@/services/email/emailService'
+import { getDraftDetail, getDraftAttachments } from '@/services/email/emailService'
 import { Search, Inbox, CheckSquare, RefreshCw, MoreVertical } from 'lucide-vue-next'
 import Skeleton from '../ui/Skeleton.vue'
 import EmailListItem from '../email/EmailListItem.vue'
@@ -133,8 +133,23 @@ function handleSelect(emailId: string) {
 
 // 加载草稿详情并打开编辑器
 async function loadDraftAndOpenEditor(draftId: string, email: any) {
+  console.log('[loadDraftAndOpenEditor] email.id:', email.id, 'draftId:', draftId)
   try {
     const detail = await getDraftDetail(draftId)
+    // 获取草稿附件
+    const draftAttachments = await getDraftAttachments(draftId)
+    console.log('[loadDraftAndOpenEditor] 获取到附件数量:', draftAttachments.length, draftAttachments)
+
+    // 转换附件为 ComposeAttachment 格式
+    const attachments = draftAttachments.map(a => ({
+      id: a.id,
+      filename: a.filename,
+      contentType: a.content_type || inferMimeType(a.filename),
+      size: a.file_size,
+      path: a.file_path,
+      content: undefined // 编辑时需要重新读取
+    }))
+
     if (detail) {
       composeStore.openDraft(
         draftId,
@@ -142,7 +157,8 @@ async function loadDraftAndOpenEditor(draftId: string, email: any) {
         detail.cc_addresses,
         detail.subject,
         detail.body_html,
-        detail.body_text
+        detail.body_text,
+        attachments
       )
     } else {
       // 如果获取详情失败，使用列表中的基本信息
@@ -152,20 +168,41 @@ async function loadDraftAndOpenEditor(draftId: string, email: any) {
         email.ccAddresses,
         email.subject || null,
         email.bodyHtml || null,
-        email.bodyText || null
+        email.bodyText || null,
+        attachments
       )
     }
   } catch (e) {
     console.error('获取草稿详情失败:', e)
-    // 使用列表中的基本信息
+    // 使用列表中的基本信息（无附件）
     composeStore.openDraft(
       draftId,
       email.toAddresses,
       email.ccAddresses,
       email.subject || null,
       email.bodyHtml || null,
-      email.bodyText || null
+      email.bodyText || null,
+      []
     )
   }
+}
+
+// 推断 MIME 类型
+function inferMimeType(filename: string): string {
+  const ext = filename.split('.').pop()?.toLowerCase() || ''
+  const mimeTypes: Record<string, string> = {
+    'pdf': 'application/pdf',
+    'doc': 'application/msword',
+    'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'xls': 'application/vnd.ms-excel',
+    'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'zip': 'application/zip',
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'png': 'image/png',
+    'gif': 'image/gif',
+    'txt': 'text/plain',
+  }
+  return mimeTypes[ext] || 'application/octet-stream'
 }
 </script>

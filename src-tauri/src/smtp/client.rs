@@ -3,11 +3,12 @@
 //! SMTP client using lettre crate for email sending.
 
 use lettre::{
-    message::{Message, MultiPart, SinglePart, header},
+    message::{Message, MultiPart, SinglePart, header, Attachment, Body},
     transport::smtp::authentication::Credentials,
     AsyncSmtpTransport, Tokio1Executor, AsyncTransport,
 };
 use std::time::Duration;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 use super::types::*;
 
@@ -149,8 +150,66 @@ impl SmtpClient {
         builder = builder.subject(&email.subject);
 
         // Build body - multipart if HTML is provided
-        let msg = if let Some(html) = &email.body_html {
-            // Create multipart MIME message (text + HTML)
+        let has_attachments = email.attachments.is_some() && !email.attachments.as_ref().unwrap().is_empty();
+
+        if has_attachments {
+            // Build text part
+            let text_part = SinglePart::builder()
+                .header(header::ContentType::TEXT_PLAIN)
+                .body(email.body.clone());
+
+            // Build the alternative multipart (text + HTML if provided)
+            let alternative_part: MultiPart = if let Some(html) = &email.body_html {
+                let html_part = SinglePart::builder()
+                    .header(header::ContentType::TEXT_HTML)
+                    .body(html.clone());
+                MultiPart::alternative()
+                    .singlepart(text_part)
+                    .singlepart(html_part)
+            } else {
+                // Wrap single text part in alternative
+                MultiPart::alternative().singlepart(text_part)
+            };
+
+            // Build mixed multipart with alternative and attachments
+            // Start with mixed builder
+            let mixed: MultiPart = {
+                // Use a fold pattern to chain attachments
+                let mut attachments_iter = email.attachments.as_ref().unwrap().iter();
+
+                // Decode first attachment to start the chain
+                let first_att = attachments_iter.next();
+                if let Some(first) = first_att {
+                    let content = STANDARD.decode(&first.content)
+                        .map_err(|e| format!("附件 '{}' Base64 解码失败: {}", first.filename, e))?;
+                    let mime_type: header::ContentType = first.content_type.parse()
+                        .map_err(|e| format!("附件 '{}' MIME 类型 '{}' 格式错误: {}", first.filename, first.content_type, e))?;
+                    let first_attachment = Attachment::new(first.filename.clone()).body(content, mime_type);
+
+                    // Start building with alternative part and first attachment
+                    let mut current = MultiPart::mixed()
+                        .multipart(alternative_part)
+                        .singlepart(first_attachment);
+
+                    // Add remaining attachments
+                    for att in attachments_iter {
+                        let content = STANDARD.decode(&att.content)
+                            .map_err(|e| format!("附件 '{}' Base64 解码失败: {}", att.filename, e))?;
+                        let mime_type: header::ContentType = att.content_type.parse()
+                            .map_err(|e| format!("附件 '{}' MIME 类型 '{}' 格式错误: {}", att.filename, att.content_type, e))?;
+                        let attachment = Attachment::new(att.filename.clone()).body(content, mime_type);
+                        current = current.singlepart(attachment);
+                    }
+                    current
+                } else {
+                    // No attachments after filtering, just use alternative
+                    alternative_part
+                }
+            };
+
+            builder.multipart(mixed).map_err(|e| e.to_string())
+        } else if let Some(html) = &email.body_html {
+            // Create multipart MIME message (text + HTML) without attachments
             let text_part = SinglePart::builder()
                 .header(header::ContentType::TEXT_PLAIN)
                 .body(email.body.clone());
@@ -163,17 +222,11 @@ impl SmtpClient {
                 .singlepart(text_part)
                 .singlepart(html_part);
 
-            builder
-                .multipart(multipart)
-                .map_err(|e| format!("邮件正文构建失败: {}", e))?
+            builder.multipart(multipart).map_err(|e| e.to_string())
         } else {
             // Plain text only
-            builder
-                .body(email.body.clone())
-                .map_err(|e| format!("邮件正文构建失败: {}", e))?
-        };
-
-        Ok(msg)
+            builder.body(email.body.clone()).map_err(|e| e.to_string())
+        }
     }
 }
 

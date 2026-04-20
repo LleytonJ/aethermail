@@ -60,6 +60,19 @@ pub struct EmailMessage {
     pub body: String,
     /// Email body HTML (optional, for rich content)
     pub body_html: Option<String>,
+    /// Attachments (optional)
+    pub attachments: Option<Vec<AttachmentData>>,
+}
+
+/// Attachment data for email sending
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachmentData {
+    /// Attachment filename
+    pub filename: String,
+    /// MIME content type (e.g., "application/pdf", "image/png")
+    pub content_type: String,
+    /// File content as Base64 encoded string
+    pub content: String,
 }
 
 /// Email send result

@@ -106,4 +106,18 @@ pub struct DraftUpdates {
     pub subject: Option<String>,
     pub body_text: Option<String>,
     pub body_html: Option<String>,
+    pub has_attachment: bool,
+}
+
+/// Draft attachment stored in database
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DbDraftAttachment {
+    pub id: String,
+    pub email_id: String,  // 草稿邮件的 id（emails.id）
+    pub filename: String,
+    pub content_type: Option<String>,
+    /// 原始文件路径（编辑草稿时可重新读取）
+    pub file_path: String,
+    pub file_size: i64,
+    pub created_at: i64,
 }

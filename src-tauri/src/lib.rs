@@ -106,6 +106,13 @@ pub fn run() {
             commands::delete_draft,
             commands::send_draft,
             commands::get_draft_detail,
+            commands::get_draft_attachments,
+            // Attachment file operations
+            commands::read_file_for_attachment,
+            commands::validate_attachment_path,
+            // Debug commands
+            commands::debug_list_all_draft_attachments,
+            commands::debug_list_draft_email_ids,
             // Database readiness check
             commands::is_database_ready,
             commands::wait_for_database,
