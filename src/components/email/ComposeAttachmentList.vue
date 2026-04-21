@@ -1,5 +1,5 @@
 <template>
-  <div v-if="attachments.length > 0" class="mt-4">
+  <div v-if="attachments.length > 0" class="px-4 py-3 bg-bg-secondary border-t border-border-primary">
     <!-- 标题 -->
     <div class="flex items-center justify-between mb-2">
       <div class="text-xs font-medium text-text-secondary">

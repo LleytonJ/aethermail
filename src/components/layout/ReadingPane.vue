@@ -57,7 +57,7 @@
           <button
             class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-success hover:bg-success/10 rounded-md transition-colors"
             title="移回收件箱"
-            @click="handleMoveToInbox"
+            @click="showMoveToInboxConfirm"
           >
             <Undo2 :size="14" />
             这不是钓鱼邮件
@@ -190,6 +190,17 @@
       @confirm="handlePermanentDelete"
       @cancel="permanentDeleteConfirmOpen = false"
     />
+
+    <!-- 移回收件箱确认对话框 -->
+    <ConfirmDialog
+      :is-open="moveToInboxConfirmOpen"
+      title="这不是钓鱼邮件"
+      :message="moveToInboxConfirmMessage"
+      confirm-text="移回收件箱"
+      cancel-text="取消"
+      @confirm="handleMoveToInbox"
+      @cancel="moveToInboxConfirmOpen = false"
+    />
   </div>
 </template>
 
@@ -239,6 +250,13 @@ const permanentDeleteConfirmMessage = computed(() => {
   return `确定要永久删除邮件「${subject}」吗？此操作无法撤销，邮件将彻底从系统中删除。`
 })
 
+// 移回收件箱确认对话框状态
+const moveToInboxConfirmOpen = ref(false)
+const moveToInboxConfirmMessage = computed(() => {
+  const subject = currentEmail.value?.subject || '无主题'
+  return `确定要将邮件「${subject}」移回收件箱吗？邮件将被标记为正常邮件。`
+})
+
 // 显示删除确认对话框
 function showDeleteConfirm() {
   deleteConfirmOpen.value = true
@@ -284,6 +302,8 @@ function handleForward() {
 async function handleMoveToInbox() {
   if (!currentEmail.value) return
 
+  moveToInboxConfirmOpen.value = false
+
   try {
     // 更新钓鱼状态为 false，并标记为用户覆盖（不再重复检测）
     await updatePhishingStatus(currentEmail.value.id, false, null, true)
@@ -323,6 +343,11 @@ function showRestorePhishingConfirm() {
 // 显示永久删除确认对话框
 function showPermanentDeleteConfirm() {
   permanentDeleteConfirmOpen.value = true
+}
+
+// 显示移回收件箱确认对话框
+function showMoveToInboxConfirm() {
+  moveToInboxConfirmOpen.value = true
 }
 
 // 恢复邮件到收件箱

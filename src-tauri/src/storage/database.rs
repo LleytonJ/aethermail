@@ -307,7 +307,8 @@ impl Database {
                     email_id TEXT NOT NULL,
                     filename TEXT NOT NULL,
                     content_type TEXT,
-                    file_path TEXT NOT NULL,
+                    file_path TEXT,
+                    content TEXT,
                     file_size INTEGER NOT NULL,
                     created_at INTEGER NOT NULL DEFAULT (unixepoch()),
                     FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE
@@ -318,30 +319,74 @@ impl Database {
             .execute(&self.pool)
             .await
             .map_err(|e| format!("创建 draft_attachments 表失败: {}", e))?;
+            log::info!("draft_attachments 表创建完成（包含 content 字段）");
         } else {
-            // 检查 draft_attachments 表结构是否需要迁移（draft_id -> email_id）
-            let draft_att_columns: Vec<String> = sqlx::query("PRAGMA table_info(draft_attachments)")
+            // 检查 draft_attachments 表结构是否需要迁移
+            // PRAGMA table_info 返回: cid, name, type, notnull, dflt_value, pk
+            let draft_att_info: Vec<(String, i32)> = sqlx::query("PRAGMA table_info(draft_attachments)")
                 .fetch_all(&self.pool)
                 .await
                 .map_err(|e| format!("获取 draft_attachments 表结构失败: {}", e))?
                 .into_iter()
-                .map(|row| row.get::<String, _>("name"))
+                .map(|row| {
+                    let name: String = row.get("name");
+                    let notnull: i32 = row.get("notnull");
+                    (name, notnull)
+                })
                 .collect();
 
-            // 如果存在 draft_id 字段但不存在 email_id 字段，需要迁移
-            if draft_att_columns.contains(&"draft_id".to_string()) && !draft_att_columns.contains(&"email_id".to_string()) {
-                log::info!("迁移 draft_attachments 表：draft_id -> email_id");
+            let draft_att_columns: Vec<String> = draft_att_info.iter().map(|(name, _)| name.clone()).collect();
+            log::info!("draft_attachments 表结构: {:?}", draft_att_info);
 
-                // SQLite 不支持直接重命名列，需要重建表
-                // 1. 创建新表
+            // 检查 file_path 是否有 NOT NULL 约束 (notnull=1)
+            let file_path_notnull = draft_att_info.iter()
+                .find(|(name, _)| name == "file_path")
+                .map(|(_, notnull)| *notnull)
+                .unwrap_or(0);
+
+            // 检查是否需要迁移：draft_id -> email_id 或 file_path 有 NOT NULL 约束
+            let needs_rebuild = (draft_att_columns.contains(&"draft_id".to_string()) && !draft_att_columns.contains(&"email_id".to_string()))
+                || file_path_notnull == 1;
+
+            // 用于后续检查 content 字段
+            let mut draft_att_columns_after = draft_att_columns.clone();
+
+            if needs_rebuild {
+                log::info!("重建 draft_attachments 表（直接删除旧表，不迁移数据）");
+
+                // 临时禁用外键检查
+                sqlx::query("PRAGMA foreign_keys = OFF")
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| format!("禁用外键检查失败: {}", e))?;
+
+                // 直接删除旧表和索引
+                sqlx::query("DROP INDEX IF EXISTS idx_draft_attachments_email")
+                    .execute(&self.pool)
+                    .await
+                    .ok(); // 忽略错误
+
+                sqlx::query("DROP TABLE IF EXISTS draft_attachments")
+                    .execute(&self.pool)
+                    .await
+                    .ok(); // 忽略错误
+
+                // 删除可能残留的临时表
+                sqlx::query("DROP TABLE IF EXISTS draft_attachments_new")
+                    .execute(&self.pool)
+                    .await
+                    .ok();
+
+                // 创建新表（正确的结构）
                 sqlx::query(
                     r#"
-                    CREATE TABLE draft_attachments_new (
+                    CREATE TABLE draft_attachments (
                         id TEXT PRIMARY KEY,
                         email_id TEXT NOT NULL,
                         filename TEXT NOT NULL,
                         content_type TEXT,
-                        file_path TEXT NOT NULL,
+                        file_path TEXT,
+                        content TEXT,
                         file_size INTEGER NOT NULL,
                         created_at INTEGER NOT NULL DEFAULT (unixepoch()),
                         FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE
@@ -350,39 +395,35 @@ impl Database {
                 )
                 .execute(&self.pool)
                 .await
-                .map_err(|e| format!("创建 draft_attachments_new 表失败: {}", e))?;
+                .map_err(|e| format!("创建 draft_attachments 表失败: {}", e))?;
 
-                // 2. 迁移数据（draft_id 转换为 email_id：添加 "draft-" 前缀）
-                sqlx::query(
-                    r#"
-                    INSERT INTO draft_attachments_new (id, email_id, filename, content_type, file_path, file_size, created_at)
-                    SELECT id, 'draft-' || draft_id, filename, content_type, file_path, file_size, created_at
-                    FROM draft_attachments
-                    "#,
-                )
-                .execute(&self.pool)
-                .await
-                .map_err(|e| format!("迁移 draft_attachments 数据失败: {}", e))?;
-
-                // 3. 删除旧表
-                sqlx::query("DROP TABLE draft_attachments")
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|e| format!("删除旧 draft_attachments 表失败: {}", e))?;
-
-                // 4. 重命名新表
-                sqlx::query("ALTER TABLE draft_attachments_new RENAME TO draft_attachments")
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|e| format!("重命名 draft_attachments 表失败: {}", e))?;
-
-                // 5. 创建索引
+                // 创建索引
                 sqlx::query("CREATE INDEX idx_draft_attachments_email ON draft_attachments(email_id)")
                     .execute(&self.pool)
                     .await
-                    .map_err(|e| format!("创建 draft_attachments 索引失败: {}", e))?;
+                    .map_err(|e| format!("创建索引失败: {}", e))?;
 
-                log::info!("draft_attachments 表迁移完成");
+                // 重新启用外键检查
+                sqlx::query("PRAGMA foreign_keys = ON")
+                    .execute(&self.pool)
+                    .await
+                    .ok();
+
+                log::info!("draft_attachments 表重建完成");
+
+                // 更新列名列表
+                draft_att_columns_after = vec!["id", "email_id", "filename", "content_type", "file_path", "content", "file_size", "created_at"]
+                    .iter().map(|s| s.to_string()).collect();
+            }
+
+            // 添加 content 字段（用于直接存储 Base64 附件内容）
+            if draft_att_columns_after.contains(&"email_id".to_string()) && !draft_att_columns_after.contains(&"content".to_string()) {
+                log::info!("为 draft_attachments 表添加 content 字段");
+                sqlx::query("ALTER TABLE draft_attachments ADD COLUMN content TEXT")
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| format!("添加 content 字段失败: {}", e))?;
+                log::info!("draft_attachments content 字段添加完成");
             }
         }
 
@@ -1375,11 +1416,14 @@ impl Database {
 
     /// Save a draft attachment
     pub async fn save_draft_attachment(&self, attachment: &DbDraftAttachment) -> Result<(), String> {
-        sqlx::query(
+        log::info!("[save_draft_attachment] 开始保存: id={}, email_id={}, filename={}, content长度={}",
+            attachment.id, attachment.email_id, attachment.filename, attachment.content.as_ref().map(|c| c.len()).unwrap_or(0));
+
+        let result = sqlx::query(
             r#"
             INSERT OR REPLACE INTO draft_attachments
-            (id, email_id, filename, content_type, file_path, file_size, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (id, email_id, filename, content_type, file_path, content, file_size, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&attachment.id)
@@ -1387,19 +1431,28 @@ impl Database {
         .bind(&attachment.filename)
         .bind(&attachment.content_type)
         .bind(&attachment.file_path)
+        .bind(&attachment.content)
         .bind(attachment.file_size)
         .bind(attachment.created_at)
         .execute(&self.pool)
-        .await
-        .map_err(|e| format!("保存草稿附件失败: {}", e))?;
+        .await;
 
-        Ok(())
+        match result {
+            Ok(_) => {
+                log::info!("[save_draft_attachment] 保存成功: id={}", attachment.id);
+                Ok(())
+            }
+            Err(e) => {
+                log::error!("[save_draft_attachment] 保存失败: {}", e);
+                Err(format!("保存草稿附件失败: {}", e))
+            }
+        }
     }
 
     /// Get all attachments for a draft by email_id (草稿邮件的 id)
     pub async fn get_draft_attachments(&self, email_id: &str) -> Result<Vec<DbDraftAttachment>, String> {
         let rows = sqlx::query(
-            "SELECT id, email_id, filename, content_type, file_path, file_size, created_at FROM draft_attachments WHERE email_id = ? ORDER BY created_at ASC"
+            "SELECT id, email_id, filename, content_type, file_path, content, file_size, created_at FROM draft_attachments WHERE email_id = ? ORDER BY created_at ASC"
         )
         .bind(email_id)
         .fetch_all(&self.pool)
@@ -1414,6 +1467,7 @@ impl Database {
                 filename: row.get("filename"),
                 content_type: row.get("content_type"),
                 file_path: row.get("file_path"),
+                content: row.get("content"),
                 file_size: row.get("file_size"),
                 created_at: row.get("created_at"),
             })

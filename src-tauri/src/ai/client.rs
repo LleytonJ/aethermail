@@ -32,6 +32,9 @@ pub struct AiConfig {
     pub api_key: String,
     pub model: String,
     pub enabled: bool,
+    /// Mock 模式：强制返回钓鱼检测结果用于测试
+    #[serde(default)]
+    pub mock_phishing: bool,
 }
 
 impl Default for AiConfig {
@@ -42,6 +45,7 @@ impl Default for AiConfig {
             api_key: "".to_string(),
             model: "gpt-4o-mini".to_string(),
             enabled: false,
+            mock_phishing: false,
         }
     }
 }
@@ -162,12 +166,19 @@ pub fn load_phishing_prompt() -> Result<String, String> {
     Ok(content)
 }
 
-/// Check if AI is available and enabled
+/// Check if AI is available and enabled (or mock mode)
 pub fn is_ai_available() -> bool {
     log::info!("[AI] 检查 AI 可用性...");
 
     match load_ai_config() {
         Ok(config) => {
+            // Mock 模式直接返回可用
+            if config.mock_phishing {
+                log::info!("[AI] ⚠️ Mock 钓鱼模式已启用，AI 可用");
+                log::info!("[AI] AI 可用性检查结果: true (mock_phishing=true)");
+                return true;
+            }
+
             let available = config.enabled && !config.api_key.is_empty() && !config.base_url.is_empty();
             log::info!("[AI] AI 可用性检查结果: {}", available);
             log::info!("[AI]   enabled={}, api_key非空={}, base_url非空={}",
@@ -198,6 +209,16 @@ impl AiClient {
         log::info!("[AI] ========== 创建 AI 客户端 ==========");
 
         let config = load_ai_config()?;
+
+        // Mock 模式：不需要真实配置，直接返回 mock 客户端
+        if config.mock_phishing {
+            log::info!("[AI] ⚠️ Mock 钓鱼模式已启用，返回 Mock 客户端");
+            return Ok(Self {
+                config,
+                client: None,
+                mock_mode: true,
+            });
+        }
 
         // Check if AI is enabled and has valid configuration
         if !config.enabled {

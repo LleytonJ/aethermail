@@ -405,7 +405,11 @@ async function handleSave() {
 }
 
 function handleKeyDown(e: KeyboardEvent) {
-  if (e.key === 'Enter') {
+  // 如果在签名编辑器（富文本编辑器）中，允许正常换行
+  const target = e.target as HTMLElement
+  const isRichTextEditor = target.closest('.rich-text-editor') || target.closest('[data-rich-text-editor]')
+
+  if (e.key === 'Enter' && !isRichTextEditor) {
     e.preventDefault()
     handleSave()
   }

@@ -140,15 +140,16 @@ async function loadDraftAndOpenEditor(draftId: string, email: any) {
     const draftAttachments = await getDraftAttachments(draftId)
     console.log('[loadDraftAndOpenEditor] 获取到附件数量:', draftAttachments.length, draftAttachments)
 
-    // 转换附件为 ComposeAttachment 格式
+    // 转换附件为 ComposeAttachment 格式 - 直接使用后端返回的 content
     const attachments = draftAttachments.map(a => ({
       id: a.id,
       filename: a.filename,
       contentType: a.content_type || inferMimeType(a.filename),
       size: a.file_size,
-      path: a.file_path,
-      content: undefined // 编辑时需要重新读取
+      path: a.file_path || '',  // 保留路径（可选）
+      content: a.content || undefined  // 直接使用后端返回的 Base64 content
     }))
+    console.log('[loadDraftAndOpenEditor] 转换后的 attachments:', attachments)
 
     if (detail) {
       composeStore.openDraft(

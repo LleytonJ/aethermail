@@ -360,7 +360,9 @@ export interface DraftAttachmentData {
   id: string
   filename: string
   content_type: string | null
-  file_path: string
+  file_path: string | null
+  /** Base64 编码的附件内容 */
+  content: string | null
   file_size: number
 }
 
@@ -568,6 +570,7 @@ export async function createDraft(draft: DraftData): Promise<string> {
         filename: a.filename,
         content_type: a.content_type,
         file_path: a.file_path,
+        content: a.content,
         file_size: a.file_size
       })) || null
     }
@@ -592,6 +595,7 @@ export async function updateDraft(draftId: string, draft: DraftData): Promise<vo
         filename: a.filename,
         content_type: a.content_type,
         file_path: a.file_path,
+        content: a.content,
         file_size: a.file_size
       })) || null
     }
@@ -608,10 +612,17 @@ export async function deleteDraft(draftId: string): Promise<void> {
 /**
  * 发送草稿
  */
-export async function sendDraft(draftId: string, signatureHtml?: string | null): Promise<SendEmailResult> {
+export async function sendDraft(draftId: string, signatureHtml?: string | null, attachments?: AttachmentData[] | null): Promise<SendEmailResult> {
+  console.log('[emailService] sendDraft - 开始发送草稿', {
+    draftId,
+    hasSignature: !!signatureHtml,
+    attachmentCount: attachments?.length || 0
+  })
+
   return invoke<SendEmailResult>('send_draft', {
     draftId,
-    signatureHtml: signatureHtml || null
+    signatureHtml: signatureHtml || null,
+    attachments: attachments || null
   })
 }
 
@@ -653,11 +664,13 @@ export async function getDraftDetail(draftId: string): Promise<EmailDetail | nul
  */
 export async function getDraftAttachments(draftId: string): Promise<DraftAttachmentData[]> {
   const result = await invoke<any[]>('get_draft_attachments', { draftId })
+  console.log('[emailService] getDraftAttachments - result:', result)
   return result.map(a => ({
     id: a.id,
     filename: a.filename,
     content_type: a.content_type,
     file_path: a.file_path,
+    content: a.content,
     file_size: a.file_size
   }))
 }

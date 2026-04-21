@@ -116,8 +116,10 @@ pub struct DbDraftAttachment {
     pub email_id: String,  // 草稿邮件的 id（emails.id）
     pub filename: String,
     pub content_type: Option<String>,
-    /// 原始文件路径（编辑草稿时可重新读取）
-    pub file_path: String,
+    /// 原始文件路径（可选）
+    pub file_path: Option<String>,
+    /// Base64 编码的附件内容（直接存储，避免路径问题）
+    pub content: Option<String>,
     pub file_size: i64,
     pub created_at: i64,
 }

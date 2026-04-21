@@ -196,7 +196,7 @@ async fn detect_phishing_for_email(parsed: &ParsedEmail) -> (bool, Option<Vec<St
     log::info!("[Sync]   主题: {}", parsed.subject.as_deref().unwrap_or("无主题"));
     log::info!("[Sync]   正文长度: {} 字符", parsed.body_text.as_deref().map(|t| t.len()).unwrap_or(0));
 
-    // 检查 AI 是否可用
+    // 检查 AI 是否可用（包含 mock_phishing 模式检查）
     log::info!("[Sync] 步骤1: 检查 AI 服务可用性");
     if !is_ai_available() {
         log::warn!("[Sync] AI 未启用或配置不完整，跳过钓鱼检测");
@@ -205,7 +205,7 @@ async fn detect_phishing_for_email(parsed: &ParsedEmail) -> (bool, Option<Vec<St
     }
     log::info!("[Sync] AI 服务可用");
 
-    // 创建 AI 客户端
+    // 创建 AI 客户端（mock_phishing 模式下会自动启用 mock）
     log::info!("[Sync] 步骤2: 创建 AI 客户端");
     let ai_client = match AiClient::new() {
         Ok(client) => {
@@ -219,7 +219,7 @@ async fn detect_phishing_for_email(parsed: &ParsedEmail) -> (bool, Option<Vec<St
         }
     };
 
-    // 检查客户端是否可用
+    // 检查客户端是否可用（mock 模式下也会返回 true）
     log::info!("[Sync] 步骤3: 检查客户端可用性");
     if !ai_client.is_available() {
         log::warn!("[Sync] AI 客户端不可用，跳过钓鱼检测");
@@ -252,6 +252,7 @@ async fn detect_phishing_for_email(parsed: &ParsedEmail) -> (bool, Option<Vec<St
     log::debug!("[Sync] 检测内容前500字符: {}", if email_content.len() > 500 { &email_content[..500] } else { &email_content });
 
     // 调用 AI 检测（10秒超时）
+    // mock_phishing 模式下会返回模拟的钓鱼检测结果
     log::info!("[Sync] 步骤5: 调用 AI API 进行检测");
     log::info!("[Sync] 超时设置: 10000ms");
 
@@ -345,11 +346,13 @@ async fn sync_via_pop3(account: &crate::commands::account::AccountConfig) -> Res
                     .map(|r| serde_json::to_string(&r).unwrap_or_default());
 
                 // Create database record
+                // 钓鱼邮件放入 phishing folder，其他邮件放入 inbox
+                let folder = if is_phishing { "phishing" } else { "inbox" };
                 let db_email = DbEmail {
                     id: format!("email-{}", chrono::Utc::now().timestamp_millis()),
                     account_id: account_id.clone(),
                     uidl: parsed.uidl,
-                    folder: "inbox".to_string(),
+                    folder: folder.to_string(),
                     draft_id: None,
                     from_address: parsed.from_address,
                     from_name: parsed.from_name,
@@ -471,11 +474,13 @@ async fn sync_via_imap(account: &crate::commands::account::AccountConfig) -> Res
                     .map(|r| serde_json::to_string(&r).unwrap_or_default());
 
                 // Create database record
+                // 钓鱼邮件放入 phishing folder，其他邮件放入 inbox
+                let folder = if is_phishing { "phishing" } else { "inbox" };
                 let db_email = DbEmail {
                     id: format!("imap-{}-{}", account_id, imap_message.uid),
                     account_id: account_id.clone(),
                     uidl: uidl.clone(),
-                    folder: "inbox".to_string(),
+                    folder: folder.to_string(),
                     draft_id: None,
                     from_address: parsed.from_address,
                     from_name: parsed.from_name,
@@ -1127,7 +1132,9 @@ pub struct DraftAttachmentData {
     pub id: String,
     pub filename: String,
     pub content_type: Option<String>,
-    pub file_path: String,
+    pub file_path: Option<String>,
+    /// Base64 编码的附件内容（直接存储）
+    pub content: Option<String>,
     pub file_size: i64,
 }
 
@@ -1147,6 +1154,18 @@ pub struct DraftData {
 #[tauri::command]
 pub async fn create_draft(draft: DraftData) -> Result<String, String> {
     let db = get_db().await?;
+
+    // 调试日志：记录附件数据
+    log::info!("[create_draft] 开始创建草稿");
+    if let Some(atts) = &draft.attachments {
+        log::info!("[create_draft] 附件数量: {}", atts.len());
+        for att in atts {
+            log::info!("[create_draft]   - id: {}, filename: {}, file_path: {:?}, file_size: {}",
+                att.id, att.filename, att.file_path, att.file_size);
+        }
+    } else {
+        log::info!("[create_draft] 无附件");
+    }
 
     // 获取账户信息以设置 from_address
     let accounts = get_accounts()?;
@@ -1185,23 +1204,29 @@ pub async fn create_draft(draft: DraftData) -> Result<String, String> {
     };
 
     db.create_draft(&db_draft).await?;
+    log::info!("[create_draft] 草稿邮件已保存, id: {}", db_draft.id);
 
     // 保存草稿附件（使用草稿邮件的 id）
     if let Some(attachments) = &draft.attachments {
         for att in attachments {
+            log::info!("[create_draft] 保存附件到数据库: id={}, filename={}, content长度={}",
+                att.id, att.filename, att.content.as_ref().map(|c| c.len()).unwrap_or(0));
             let db_att = DbDraftAttachment {
                 id: att.id.clone(),
                 email_id: db_draft.id.clone(),  // 使用草稿邮件的 id
                 filename: att.filename.clone(),
                 content_type: att.content_type.clone(),
                 file_path: att.file_path.clone(),
+                content: att.content.clone(),
                 file_size: att.file_size,
                 created_at: now,
             };
             db.save_draft_attachment(&db_att).await?;
+            log::info!("[create_draft] 附件保存成功: {}", att.filename);
         }
     }
 
+    log::info!("[create_draft] 草稿创建完成, draft_id: {}", draft_id);
     Ok(draft_id)
 }
 
@@ -1209,6 +1234,18 @@ pub async fn create_draft(draft: DraftData) -> Result<String, String> {
 #[tauri::command]
 pub async fn update_draft(draft_id: String, draft: DraftData) -> Result<(), String> {
     let db = get_db().await?;
+
+    // 调试日志
+    log::info!("[update_draft] 开始更新草稿, draft_id: {}", draft_id);
+    if let Some(atts) = &draft.attachments {
+        log::info!("[update_draft] 附件数量: {}", atts.len());
+        for att in atts {
+            log::info!("[update_draft]   - id: {}, filename: {}, file_path: {:?}, file_size: {}",
+                att.id, att.filename, att.file_path, att.file_size);
+        }
+    } else {
+        log::info!("[update_draft] 无附件");
+    }
 
     // 判断是否有附件
     let has_attachment = draft.attachments.is_some() && !draft.attachments.as_ref().unwrap().is_empty();
@@ -1232,12 +1269,15 @@ pub async fn update_draft(draft_id: String, draft: DraftData) -> Result<(), Stri
     if let Some(attachments) = &draft.attachments {
         let now = chrono::Utc::now().timestamp();
         for att in attachments {
+            log::info!("[update_draft] 保存附件到数据库: id={}, filename={}, content长度={}",
+                att.id, att.filename, att.content.as_ref().map(|c| c.len()).unwrap_or(0));
             let db_att = DbDraftAttachment {
                 id: att.id.clone(),
                 email_id: email_id.clone(),  // 使用草稿邮件的 id
                 filename: att.filename.clone(),
                 content_type: att.content_type.clone(),
                 file_path: att.file_path.clone(),
+                content: att.content.clone(),
                 file_size: att.file_size,
                 created_at: now,
             };
@@ -1245,6 +1285,7 @@ pub async fn update_draft(draft_id: String, draft: DraftData) -> Result<(), Stri
         }
     }
 
+    log::info!("[update_draft] 草稿更新完成");
     Ok(())
 }
 
@@ -1260,8 +1301,21 @@ pub async fn delete_draft(draft_id: String) -> Result<(), String> {
 pub async fn send_draft(
     draft_id: String,
     signature_html: Option<String>,
+    attachments: Option<Vec<AttachmentData>>,
 ) -> Result<SendEmailResult, String> {
     let db = get_db().await?;
+
+    // 调试日志
+    log::info!("[send_draft] 开始发送草稿, draft_id: {}", draft_id);
+    if let Some(atts) = &attachments {
+        log::info!("[send_draft] 前端传递的附件数量: {}", atts.len());
+        for att in atts {
+            log::info!("[send_draft]   - 附件: {} ({}), content长度: {} bytes",
+                att.filename, att.content_type, att.content.len());
+        }
+    } else {
+        log::info!("[send_draft] 前端未传递附件");
+    }
 
     // 获取草稿内容
     let draft = db.get_draft_by_id(&draft_id).await?
@@ -1314,40 +1368,84 @@ pub async fn send_draft(
         None
     };
 
-    // 读取草稿附件（使用草稿邮件的 id）
-    let draft_attachments = db.get_draft_attachments(&draft.id).await?;
-    let attachments: Vec<AttachmentData> = draft_attachments
-        .into_iter()
-        .filter_map(|att| {
-            // 检查文件是否存在
-            if !std::path::Path::new(&att.file_path).exists() {
-                log::warn!("草稿附件文件不存在: {}", att.file_path);
-                return None;
-            }
+    // 使用前端传递的附件（优先），如果没有则从数据库读取草稿附件
+    let final_attachments: Option<Vec<AttachmentData>> = if attachments.is_some() && !attachments.as_ref().unwrap().is_empty() {
+        log::info!("[send_draft] 使用前端传递的附件");
+        attachments
+    } else {
+        // 读取草稿附件（使用草稿邮件的 id）
+        log::info!("[send_draft] 从数据库读取草稿附件, draft.id: {}", draft.id);
+        let draft_attachments = db.get_draft_attachments(&draft.id).await?;
+        log::info!("[send_draft] 数据库中草稿附件数量: {}", draft_attachments.len());
 
-            // 读取文件内容并编码为 Base64
-            match std::fs::read(&att.file_path) {
-                Ok(content) => {
-                    use base64::{Engine as _, engine::general_purpose::STANDARD};
-                    let encoded = STANDARD.encode(&content);
-                    let filename = att.filename.clone();
-                    let content_type = att.content_type.clone().unwrap_or_else(|| {
-                        // 根据 filename 推断 MIME 类型
-                        infer_mime_type(&filename)
-                    });
-                    Some(AttachmentData {
-                        filename,
-                        content_type,
-                        content: encoded,
-                    })
+        let atts: Vec<AttachmentData> = draft_attachments
+            .into_iter()
+            .filter_map(|att| {
+                let filename = att.filename.clone();
+                let content_type = att.content_type.clone().unwrap_or_else(|| {
+                    infer_mime_type(&filename)
+                });
+
+                // 如果数据库中已存储 content，直接使用
+                if let Some(content) = &att.content {
+                    if !content.is_empty() {
+                        log::info!("[send_draft]   - 使用数据库中的 content: {} (长度: {})", filename, content.len());
+                        return Some(AttachmentData {
+                            filename,
+                            content_type,
+                            content: content.clone(),
+                        });
+                    }
                 }
-                Err(e) => {
-                    log::warn!("读取草稿附件文件失败: {} - {}", att.file_path, e);
-                    None
+
+                // 否则尝试从 file_path 读取
+                if let Some(file_path) = &att.file_path {
+                    if !file_path.is_empty() && std::path::Path::new(file_path).exists() {
+                        match std::fs::read(file_path) {
+                            Ok(content) => {
+                                use base64::{Engine as _, engine::general_purpose::STANDARD};
+                                let encoded = STANDARD.encode(&content);
+                                log::info!("[send_draft]   - 从文件读取: {} (长度: {})", filename, encoded.len());
+                                return Some(AttachmentData {
+                                    filename,
+                                    content_type,
+                                    content: encoded,
+                                });
+                            }
+                            Err(e) => {
+                                log::warn!("读取草稿附件文件失败: {} - {}", file_path, e);
+                                return None;
+                            }
+                        }
+                    }
                 }
-            }
-        })
-        .collect();
+
+                log::warn!("草稿附件无有效 content 或 file_path: {}", filename);
+                None
+            })
+            .collect();
+
+        if atts.is_empty() {
+            None
+        } else {
+            Some(atts)
+        }
+    };
+
+    // 判断是否有附件
+    let has_attachment = final_attachments.is_some() && !final_attachments.as_ref().unwrap().is_empty();
+
+    // 提前保存附件信息（用于发送成功后保存到数据库）
+    let attachments_info: Vec<(String, String, String, i64)> = if has_attachment {
+        final_attachments.as_ref().unwrap().iter().map(|att| {
+            let base64_len = att.content.len();
+            let padding = if att.content.ends_with("==") { 2 } else if att.content.ends_with("=") { 1 } else { 0 };
+            let size = ((base64_len - padding) * 3 / 4) as i64;
+            (att.filename.clone(), att.content_type.clone(), att.content.clone(), size)
+        }).collect()
+    } else {
+        vec![]
+    };
 
     // 创建邮件消息
     let email = EmailMessage {
@@ -1358,16 +1456,65 @@ pub async fn send_draft(
         subject: draft.subject.clone().unwrap_or_default(),
         body: draft.body_text.clone().unwrap_or_default(),
         body_html: final_body_html,
-        attachments: if attachments.is_empty() { None } else { Some(attachments) },
+        attachments: final_attachments,
     };
 
     // 发送邮件
     let result = client.send_email(email).await;
 
-    // 发送成功后标记草稿为已发送
+    // 发送成功后标记草稿为已发送并保存附件
     if result.success {
         let sent_uidl = format!("sent-{}", chrono::Utc::now().timestamp_millis());
         db.mark_draft_as_sent(&draft_id, &sent_uidl).await?;
+
+        // 保存附件信息到数据库并缓存附件内容
+        if has_attachment {
+            let sent_id = format!("draft-{}", draft_id); // 使用草稿邮件的 id
+            let cache_dir = get_cache_directory()?;
+            for (filename, content_type, content_base64, size) in attachments_info {
+                let att_id = format!("att-{}", uuid::Uuid::new_v4());
+
+                // 将附件内容解码并保存到缓存目录
+                let cache_path = cache_dir.join(format!("{}.dat", att_id));
+                let is_downloaded = match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &content_base64) {
+                    Ok(decoded) => {
+                        match std::fs::write(&cache_path, &decoded) {
+                            Ok(_) => true,
+                            Err(e) => {
+                                log::warn!("保存附件缓存失败: {} - {}", filename, e);
+                                false
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Base64 解码失败: {} - {}", filename, e);
+                        false
+                    }
+                };
+
+                let local_path = if is_downloaded {
+                    Some(cache_path.to_string_lossy().to_string())
+                } else {
+                    None
+                };
+
+                let db_att = DbAttachment {
+                    id: att_id,
+                    email_id: sent_id.clone(),
+                    filename,
+                    mime_type: content_type,
+                    size,
+                    content_id: None,
+                    imap_section: None,
+                    is_downloaded,
+                    local_path,
+                };
+
+                if let Err(e) = db.save_attachment(&db_att).await {
+                    log::warn!("保存附件记录失败: {}", e);
+                }
+            }
+        }
     }
 
     Ok(result)
@@ -1461,7 +1608,9 @@ pub struct DraftAttachmentInfo {
     pub id: String,
     pub filename: String,
     pub content_type: Option<String>,
-    pub file_path: String,
+    pub file_path: Option<String>,
+    /// Base64 编码的附件内容
+    pub content: Option<String>,
     pub file_size: i64,
 }
 
@@ -1477,6 +1626,11 @@ pub async fn get_draft_attachments(draft_id: String) -> Result<Vec<DraftAttachme
     let attachments = db.get_draft_attachments(&email_id).await?;
     log::info!("[get_draft_attachments] 找到 {} 个附件", attachments.len());
 
+    for att in &attachments {
+        log::info!("[get_draft_attachments]   - id: {}, filename: {}, content长度: {}, file_size: {}",
+            att.id, att.filename, att.content.as_ref().map(|c| c.len()).unwrap_or(0), att.file_size);
+    }
+
     Ok(attachments
         .into_iter()
         .map(|att| DraftAttachmentInfo {
@@ -1484,6 +1638,7 @@ pub async fn get_draft_attachments(draft_id: String) -> Result<Vec<DraftAttachme
             filename: att.filename,
             content_type: att.content_type,
             file_path: att.file_path,
+            content: att.content,
             file_size: att.file_size,
         })
         .collect())
@@ -1570,6 +1725,20 @@ pub async fn send_email(
     signature_html: Option<String>,
     attachments: Option<Vec<AttachmentData>>,
 ) -> Result<SendEmailResult, String> {
+    // 调试日志：记录附件数据
+    log::info!("[send_email] 开始发送邮件");
+    log::info!("[send_email] subject: {}", subject);
+    log::info!("[send_email] to_addresses: {:?}", to_addresses);
+    if let Some(atts) = &attachments {
+        log::info!("[send_email] 附件数量: {}", atts.len());
+        for att in atts {
+            log::info!("[send_email]   - 附件: {} ({}), content长度: {} bytes",
+                att.filename, att.content_type, att.content.len());
+        }
+    } else {
+        log::info!("[send_email] 无附件");
+    }
+
     // Get account configuration
     let accounts = get_accounts()?;
     let account = accounts
@@ -1627,6 +1796,18 @@ pub async fn send_email(
     // 判断是否有附件
     let has_attachment = attachments.is_some() && !attachments.as_ref().unwrap().is_empty();
 
+    // 提前保存附件信息（用于发送成功后保存到数据库）
+    let attachments_info: Vec<(String, String, String, i64)> = if has_attachment {
+        attachments.as_ref().unwrap().iter().map(|att| {
+            let base64_len = att.content.len();
+            let padding = if att.content.ends_with("==") { 2 } else if att.content.ends_with("=") { 1 } else { 0 };
+            let size = ((base64_len - padding) * 3 / 4) as i64;
+            (att.filename.clone(), att.content_type.clone(), att.content.clone(), size)
+        }).collect()
+    } else {
+        vec![]
+    };
+
     // Create email message
     let email = EmailMessage {
         from_address: account.email.clone(),
@@ -1673,6 +1854,54 @@ pub async fn send_email(
 
         if let Err(e) = db.save_email(&sent_email).await {
             log::warn!("保存已发送邮件到本地数据库失败: {}", e);
+        }
+
+        // 保存附件信息到数据库并缓存附件内容
+        if has_attachment {
+            let cache_dir = get_cache_directory()?;
+            for (filename, content_type, content_base64, size) in attachments_info {
+                let att_id = format!("att-{}", uuid::Uuid::new_v4());
+
+                // 将附件内容解码并保存到缓存目录
+                let cache_path = cache_dir.join(format!("{}.dat", att_id));
+                let is_downloaded = match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &content_base64) {
+                    Ok(decoded) => {
+                        match std::fs::write(&cache_path, &decoded) {
+                            Ok(_) => true,
+                            Err(e) => {
+                                log::warn!("保存附件缓存失败: {} - {}", filename, e);
+                                false
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Base64 解码失败: {} - {}", filename, e);
+                        false
+                    }
+                };
+
+                let local_path = if is_downloaded {
+                    Some(cache_path.to_string_lossy().to_string())
+                } else {
+                    None
+                };
+
+                let db_att = DbAttachment {
+                    id: att_id,
+                    email_id: sent_id.clone(),
+                    filename,
+                    mime_type: content_type,
+                    size,
+                    content_id: None,
+                    imap_section: None,
+                    is_downloaded,
+                    local_path,
+                };
+
+                if let Err(e) = db.save_attachment(&db_att).await {
+                    log::warn!("保存附件记录失败: {}", e);
+                }
+            }
         }
     }
 

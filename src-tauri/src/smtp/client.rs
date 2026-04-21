@@ -152,7 +152,13 @@ impl SmtpClient {
         // Build body - multipart if HTML is provided
         let has_attachments = email.attachments.is_some() && !email.attachments.as_ref().unwrap().is_empty();
 
+        log::info!("[SMTP] build_message - has_attachments: {}", has_attachments);
+
         if has_attachments {
+            log::info!("[SMTP] build_message - 开始构建带附件的 MIME 消息");
+            let atts = email.attachments.as_ref().unwrap();
+            log::info!("[SMTP] build_message - 附件数量: {}", atts.len());
+
             // Build text part
             let text_part = SinglePart::builder()
                 .header(header::ContentType::TEXT_PLAIN)
@@ -175,13 +181,15 @@ impl SmtpClient {
             // Start with mixed builder
             let mixed: MultiPart = {
                 // Use a fold pattern to chain attachments
-                let mut attachments_iter = email.attachments.as_ref().unwrap().iter();
+                let mut attachments_iter = atts.iter();
 
                 // Decode first attachment to start the chain
                 let first_att = attachments_iter.next();
                 if let Some(first) = first_att {
+                    log::info!("[SMTP] build_message - 处理第一个附件: {} ({})", first.filename, first.content_type);
                     let content = STANDARD.decode(&first.content)
                         .map_err(|e| format!("附件 '{}' Base64 解码失败: {}", first.filename, e))?;
+                    log::info!("[SMTP] build_message - Base64 解码成功，内容大小: {} bytes", content.len());
                     let mime_type: header::ContentType = first.content_type.parse()
                         .map_err(|e| format!("附件 '{}' MIME 类型 '{}' 格式错误: {}", first.filename, first.content_type, e))?;
                     let first_attachment = Attachment::new(first.filename.clone()).body(content, mime_type);
@@ -191,22 +199,30 @@ impl SmtpClient {
                         .multipart(alternative_part)
                         .singlepart(first_attachment);
 
+                    log::info!("[SMTP] build_message - 已添加第一个附件");
+
                     // Add remaining attachments
                     for att in attachments_iter {
+                        log::info!("[SMTP] build_message - 处理附件: {} ({})", att.filename, att.content_type);
                         let content = STANDARD.decode(&att.content)
                             .map_err(|e| format!("附件 '{}' Base64 解码失败: {}", att.filename, e))?;
+                        log::info!("[SMTP] build_message - Base64 解码成功，内容大小: {} bytes", content.len());
                         let mime_type: header::ContentType = att.content_type.parse()
                             .map_err(|e| format!("附件 '{}' MIME 类型 '{}' 格式错误: {}", att.filename, att.content_type, e))?;
                         let attachment = Attachment::new(att.filename.clone()).body(content, mime_type);
                         current = current.singlepart(attachment);
+                        log::info!("[SMTP] build_message - 已添加附件: {}", att.filename);
                     }
+                    log::info!("[SMTP] build_message - 所有附件已添加完成");
                     current
                 } else {
+                    log::warn!("[SMTP] build_message - has_attachments=true 但附件列表为空");
                     // No attachments after filtering, just use alternative
                     alternative_part
                 }
             };
 
+            log::info!("[SMTP] build_message - 构建 multipart/mixed MIME 消息完成");
             builder.multipart(mixed).map_err(|e| e.to_string())
         } else if let Some(html) = &email.body_html {
             // Create multipart MIME message (text + HTML) without attachments

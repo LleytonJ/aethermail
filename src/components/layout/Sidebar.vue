@@ -209,6 +209,17 @@ watch(
   }
 )
 
+// 监听同步完成，更新钓鱼邮件未读数量
+watch(
+  () => mailboxStore.syncing,
+  (isSyncing, wasSyncing) => {
+    // 同步完成时更新钓鱼邮件数量
+    if (wasSyncing && !isSyncing) {
+      loadPhishingUnreadCount()
+    }
+  }
+)
+
 // 钓鱼检测现在在后端执行，邮件同步后会自动刷新列表
 // 不再需要监听前端钓鱼检测事件
 

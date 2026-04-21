@@ -86,33 +86,14 @@
           {{ errors.body }}
         </p>
       </div>
-
-      <!-- 附件列表 -->
-      <ComposeAttachmentList
-        :attachments="attachments"
-        @remove="handleRemoveAttachment"
-        @clear-all="handleClearAttachments"
-      />
-
-      <!-- 签名开关 -->
-      <div v-if="showSignatureToggle" class="flex items-center justify-between py-2 bg-bg-secondary rounded-lg px-3">
-        <div class="text-sm text-text-secondary">附加签名</div>
-        <button
-          :class="[
-            'relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors',
-            form.includeSignature ? 'bg-accent' : 'bg-bg-tertiary'
-          ]"
-          @click="form.includeSignature = !form.includeSignature"
-        >
-          <span
-            :class="[
-              'inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform',
-              form.includeSignature ? 'translate-x-4.5' : 'translate-x-0.5'
-            ]"
-          />
-        </button>
-      </div>
     </div>
+
+    <!-- 附件列表 (固定在底部栏上方) -->
+    <ComposeAttachmentList
+      :attachments="attachments"
+      @remove="handleRemoveAttachment"
+      @clear-all="handleClearAttachments"
+    />
 
     <!-- 底部操作栏 -->
     <div class="flex items-center justify-between px-4 py-3 border-t border-border-primary">
@@ -229,12 +210,12 @@ const form = ref({
   to: [] as string[],
   cc: [] as string[],
   subject: '',
-  body: '',
-  includeSignature: true
+  body: ''
 })
 
 // 附件列表
 const attachments = ref<ComposeAttachment[]>([])
+console.log('[ComposeEmail] 初始化 attachments ref:', attachments.value)
 
 // 草稿 ID（编辑草稿时有值）
 const currentDraftId = ref<string | null>(null)
@@ -244,12 +225,6 @@ const isDragOver = ref(false)
 
 // 处理附件状态
 const isProcessingAttachment = ref(false)
-
-// 签名开关显示条件
-const showSignatureToggle = computed(() => {
-  const account = accountStore.activeAccount
-  return account && account.signatureHtml && account.signatureHtml.length > 0
-})
 
 // 验证错误
 const errors = ref({
@@ -267,6 +242,11 @@ const isSavingDraft = ref(false)
 watch(
   [() => props.draftId, () => props.draftData, () => props.replyTo, () => props.forward, () => props.draftAttachments],
   ([draftId, draftData, replyTo, forward, draftAttachments]) => {
+    console.log('[ComposeEmail] watch 触发 - draftId:', draftId, 'draftAttachments:', draftAttachments)
+    // 获取账户签名
+    const account = accountStore.activeAccount
+    const signatureHtml = account?.signatureHtml || ''
+
     // 编辑草稿模式
     if (draftId && draftData) {
       currentDraftId.value = draftId
@@ -274,29 +254,52 @@ watch(
       form.value.cc = draftData.ccAddresses || []
       form.value.subject = draftData.subject || ''
       form.value.body = draftData.bodyHtml || draftData.bodyText || ''
-      attachments.value = draftAttachments || []
+      // 草稿不附加新签名（保留原有内容）
+
+      // 直接使用草稿附件（content 已从后端获取）
+      if (draftAttachments && draftAttachments.length > 0) {
+        console.log('[ComposeEmail] 从草稿恢复附件, 数量:', draftAttachments.length)
+        console.log('[ComposeEmail] draftAttachments 详情:', JSON.stringify(draftAttachments, null, 2))
+        attachments.value = draftAttachments.map(att => ({
+          id: att.id,
+          filename: att.filename,
+          contentType: att.contentType,
+          size: att.size,
+          path: att.path || '',
+          content: att.content
+        }))
+        console.log('[ComposeEmail] 附件恢复完成:', attachments.value)
+        for (const att of attachments.value) {
+          console.log('[ComposeEmail] 恢复的附件:', att.filename, 'content长度:', att.content?.length || 0)
+        }
+      } else {
+        attachments.value = []
+      }
     } else if (replyTo) {
       currentDraftId.value = null
       form.value.to = [replyTo.from]
       form.value.subject = replyTo.subject.startsWith('Re:')
         ? replyTo.subject
         : `Re: ${replyTo.subject}`
-      form.value.body = `\n\n--- 原始邮件 ---\n${replyTo.body}`
+      // 回复内容 + 签名
+      form.value.body = `<br><br>--- 原始邮件 ---<br>${replyTo.body}${signatureHtml ? `<br><br>${signatureHtml}` : ''}`
       attachments.value = []
     } else if (forward) {
       currentDraftId.value = null
       form.value.subject = forward.subject.startsWith('Fwd:')
         ? forward.subject
         : `Fwd: ${forward.subject}`
-      form.value.body = `\n\n--- 转发邮件 ---\n${forward.body}`
+      // 转发内容 + 签名
+      form.value.body = `<br><br>--- 转发邮件 ---<br>${forward.body}${signatureHtml ? `<br><br>${signatureHtml}` : ''}`
       attachments.value = []
     } else {
-      // 新邮件模式：重置表单
+      // 新邮件模式：重置表单，附加签名（签名前留空行供用户撰写内容）
       currentDraftId.value = null
       form.value.to = []
       form.value.cc = []
       form.value.subject = ''
-      form.value.body = ''
+      // 新邮件签名前留3个空行，方便用户在签名上方撰写正文
+      form.value.body = signatureHtml ? `<br><br><br>${signatureHtml}` : ''
       attachments.value = []
     }
   },
@@ -394,6 +397,8 @@ function inferMimeType(filename: string): string {
 async function addAttachmentFromPath(filePath: string) {
   isProcessingAttachment.value = true
 
+  console.log('[ComposeEmail] addAttachmentFromPath - filePath:', filePath)
+
   try {
     // 获取文件名
     const filename = filePath.split(/[\\/]/).pop() || 'unknown'
@@ -411,6 +416,9 @@ async function addAttachmentFromPath(filePath: string) {
       content: attachmentData.content
     }
 
+    console.log('[ComposeEmail] addAttachmentFromPath - 创建附件对象:', attachment)
+    console.log('[ComposeEmail] addAttachmentFromPath - path:', attachment.path)
+
     // 计算文件大小（从 Base64 内容）
     const base64Length = attachmentData.content.length
     const padding = attachmentData.content.endsWith('==') ? 2 : attachmentData.content.endsWith('=') ? 1 : 0
@@ -418,6 +426,9 @@ async function addAttachmentFromPath(filePath: string) {
 
     // 添加到列表
     attachments.value.push(attachment)
+    console.log('[ComposeEmail] addAttachmentFromPath - attachments.value:', attachments.value)
+    console.log('[ComposeEmail] addAttachmentFromPath - 添加后的附件 path:', attachments.value[attachments.value.length - 1].path)
+
     notificationStore.success('附件已添加', filename)
   } catch (e) {
     notificationStore.error('添加附件失败', e instanceof Error ? e.message : '无法读取文件')
@@ -541,13 +552,20 @@ function prepareAttachmentsForSend(): AttachmentData[] | null {
 function prepareAttachmentsForDraft(): DraftAttachmentData[] | null {
   if (attachments.value.length === 0) return null
 
-  return attachments.value.map(a => ({
+  console.log('[ComposeEmail] prepareAttachmentsForDraft - attachments.value:', attachments.value)
+  const result = attachments.value.map(a => ({
     id: a.id,
     filename: a.filename,
     content_type: a.contentType,
-    file_path: a.path,
+    file_path: a.path || null,
+    content: a.content || null,  // 直接传递 Base64 content
     file_size: a.size
   }))
+  console.log('[ComposeEmail] prepareAttachmentsForDraft - 结果:', result)
+  for (const att of result) {
+    console.log('[ComposeEmail] prepareAttachmentsForDraft - 附件:', att.filename, 'content长度:', att.content?.length || 0)
+  }
+  return result
 }
 
 // 发送邮件
@@ -563,20 +581,24 @@ async function handleSend() {
   sendingState.value = 'sending'
   errorMessage.value = ''
 
-  // 获取签名 HTML（如果启用）
-  const signatureHtml = form.value.includeSignature && account.signatureHtml
-    ? account.signatureHtml
-    : null
+  // 签名已附加到 body 中，发送时不需要额外处理
+  const signatureHtml = null
 
   try {
     // 准备附件数据
     const attachmentData = prepareAttachmentsForSend()
+    console.log('[ComposeEmail] handleSend - attachmentData:', attachmentData)
+    if (attachmentData) {
+      for (const att of attachmentData) {
+        console.log('[ComposeEmail] handleSend - 附件:', att.filename, 'content长度:', att.content?.length || 0)
+      }
+    }
 
     // 区分草稿发送和新邮件发送
     let result
     if (currentDraftId.value) {
-      // 发送草稿
-      result = await sendDraft(currentDraftId.value, signatureHtml)
+      // 发送草稿 - 传递当前附件数据
+      result = await sendDraft(currentDraftId.value, signatureHtml, attachmentData)
     } else {
       // 发送新邮件
       result = await sendEmail(
@@ -667,8 +689,3 @@ function handleClose() {
 }
 </script>
 
-<style scoped>
-.translate-x-4.5 {
-  transform: translateX(18px);
-}
-</style>
