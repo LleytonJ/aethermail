@@ -30,8 +30,8 @@
       </button>
     </div>
 
-    <!-- 表单内容 -->
-    <div class="flex-1 overflow-y-auto p-4 space-y-4">
+    <!-- 表单头部（固定）：收件人、抄送、主题 -->
+    <div class="p-4 space-y-4 border-b border-border-primary">
       <!-- 收件人 -->
       <div>
         <AddressInput
@@ -57,35 +57,33 @@
 
       <!-- 主题 -->
       <div>
-        <label class="block text-xs font-medium text-text-secondary mb-1">
-          主题
-        </label>
-        <input
-          v-model="form.subject"
-          type="text"
-          placeholder="邮件主题"
-          class="w-full px-3 py-2 bg-bg-secondary border border-border-primary rounded-lg text-sm text-text-primary outline-none focus:border-accent transition-colors"
-          :class="{ 'border-danger': errors.subject }"
-        />
-        <p v-if="errors.subject" class="text-xs text-danger mt-1">
+        <div class="flex items-start gap-2">
+          <span class="text-xs text-text-tertiary pt-2.5 min-w-[3rem] shrink-0">主题</span>
+          <input
+            v-model="form.subject"
+            type="text"
+            placeholder="邮件主题"
+            class="flex-1 px-3 py-2 bg-bg-secondary border border-border-primary rounded-lg text-sm text-text-primary outline-none focus:border-accent transition-colors"
+            :class="{ 'border-danger': errors.subject }"
+          />
+        </div>
+        <p v-if="errors.subject" class="text-xs text-danger mt-1 ml-[3.5rem]">
           {{ errors.subject }}
         </p>
       </div>
+    </div>
 
-      <!-- 正文 -->
-      <div class="flex-1">
-        <label class="block text-xs font-medium text-text-secondary mb-1">
-          正文
-        </label>
-        <RichTextEditor
-          v-model="form.body"
-          placeholder="邮件内容..."
-          :min-height="256"
-        />
-        <p v-if="errors.body" class="text-xs text-danger mt-1">
-          {{ errors.body }}
-        </p>
-      </div>
+    <!-- 正文（可滚动区域） -->
+    <div class="flex-1 flex flex-col min-h-0 p-4">
+      <RichTextEditor
+        v-model="form.body"
+        placeholder="邮件内容..."
+        class="flex-1 min-h-0"
+        :min-height="0"
+      />
+      <p v-if="errors.body" class="text-xs text-danger mt-1">
+        {{ errors.body }}
+      </p>
     </div>
 
     <!-- 附件列表 (固定在底部栏上方) -->
@@ -156,10 +154,23 @@
       </div>
     </div>
   </div>
+
+  <!-- 关闭确认对话框 -->
+  <ConfirmDialog
+    :is-open="showCloseConfirm"
+    title="保存邮件"
+    message="邮件内容已修改，是否需要保存？"
+    confirm-text="保存"
+    neutral-text="不保存"
+    cancel-text="取消"
+    @confirm="handleCloseSave"
+    @neutral="handleCloseDiscard"
+    @cancel="handleCloseCancel"
+  />
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { X, Send, Loader2, Save, Paperclip, Upload } from 'lucide-vue-next'
 import { open } from '@tauri-apps/plugin-dialog'
 import { useAccountStore } from '@/stores/account'
@@ -168,6 +179,7 @@ import { sendEmail, createDraft, updateDraft, sendDraft, readFileForAttachment, 
 import AddressInput from '@/components/ui/AddressInput.vue'
 import RichTextEditor from '@/components/ui/RichTextEditor.vue'
 import ComposeAttachmentList from '@/components/email/ComposeAttachmentList.vue'
+import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import type { ComposeAttachment } from '@/stores/compose'
 
 interface Props {
@@ -238,6 +250,16 @@ const sendingState = ref<'idle' | 'sending' | 'success' | 'error'>('idle')
 const errorMessage = ref('')
 const isSavingDraft = ref(false)
 
+// 关闭确认对话框状态
+const showCloseConfirm = ref(false)
+
+// 初始内容（用于判断是否有用户修改）
+const initialTo = ref<string[]>([])
+const initialCc = ref<string[]>([])
+const initialSubject = ref('')
+const initialBody = ref('')
+const initialAttachments = ref<ComposeAttachment[]>([])
+
 // 初始化表单（回复、转发或编辑草稿）
 watch(
   [() => props.draftId, () => props.draftData, () => props.replyTo, () => props.forward, () => props.draftAttachments],
@@ -275,23 +297,47 @@ watch(
       } else {
         attachments.value = []
       }
+
+      // 记录初始值
+      initialTo.value = [...form.value.to]
+      initialCc.value = [...form.value.cc]
+      initialSubject.value = form.value.subject
+      initialBody.value = form.value.body
+      initialAttachments.value = attachments.value.map(a => ({ ...a }))
     } else if (replyTo) {
       currentDraftId.value = null
       form.value.to = [replyTo.from]
+      form.value.cc = []
       form.value.subject = replyTo.subject.startsWith('Re:')
         ? replyTo.subject
         : `Re: ${replyTo.subject}`
       // 回复内容 + 签名
-      form.value.body = `<br><br>--- 原始邮件 ---<br>${replyTo.body}${signatureHtml ? `<br><br>${signatureHtml}` : ''}`
+      form.value.body = `<br><br>--- 原始邮件 ---<br>${replyTo.body}${signatureHtml ? `<br><br><div style="color: #1a1a1a">${signatureHtml}</div>` : ''}`
       attachments.value = []
+
+      // 记录初始值
+      initialTo.value = [...form.value.to]
+      initialCc.value = []
+      initialSubject.value = form.value.subject
+      initialBody.value = form.value.body
+      initialAttachments.value = []
     } else if (forward) {
       currentDraftId.value = null
+      form.value.to = []
+      form.value.cc = []
       form.value.subject = forward.subject.startsWith('Fwd:')
         ? forward.subject
         : `Fwd: ${forward.subject}`
       // 转发内容 + 签名
-      form.value.body = `<br><br>--- 转发邮件 ---<br>${forward.body}${signatureHtml ? `<br><br>${signatureHtml}` : ''}`
+      form.value.body = `<br><br>--- 转发邮件 ---<br>${forward.body}${signatureHtml ? `<br><br><div style="color: #1a1a1a">${signatureHtml}</div>` : ''}`
       attachments.value = []
+
+      // 记录初始值
+      initialTo.value = []
+      initialCc.value = []
+      initialSubject.value = form.value.subject
+      initialBody.value = form.value.body
+      initialAttachments.value = []
     } else {
       // 新邮件模式：重置表单，附加签名（签名前留空行供用户撰写内容）
       currentDraftId.value = null
@@ -299,9 +345,25 @@ watch(
       form.value.cc = []
       form.value.subject = ''
       // 新邮件签名前留3个空行，方便用户在签名上方撰写正文
-      form.value.body = signatureHtml ? `<br><br><br>${signatureHtml}` : ''
+      form.value.body = signatureHtml ? `<br><br><br><div style="color: #1a1a1a">${signatureHtml}</div>` : ''
       attachments.value = []
+
+      // 记录初始值
+      initialTo.value = []
+      initialCc.value = []
+      initialSubject.value = ''
+      initialBody.value = form.value.body
+      initialAttachments.value = []
     }
+
+    // TipTap 编辑器会规范化 HTML，需要等待编辑器稳定后重新同步 initialBody
+    nextTick(() => {
+      setTimeout(() => {
+        console.log('[ComposeEmail] 同步 initialBody - form.body:', form.value.body?.substring(0, 100))
+        initialBody.value = form.value.body
+        console.log('[ComposeEmail] 同步后 initialBody:', initialBody.value?.substring(0, 100))
+      }, 100)
+    })
   },
   { immediate: true }
 )
@@ -678,14 +740,95 @@ async function handleSaveDraft() {
 
 // 关闭
 function handleClose() {
-  const hasContent = form.value.to.length > 0 || form.value.subject || form.value.body || attachments.value.length > 0
-  if (hasContent) {
-    if (confirm('您已填写了一些内容，确定要关闭吗？')) {
-      emit('close')
-    }
+  // 检查是否有用户修改（与初始值比较）
+  const hasChanges = checkHasChanges()
+  if (hasChanges) {
+    showCloseConfirm.value = true
   } else {
     emit('close')
   }
 }
+
+// 检查是否有用户修改
+function checkHasChanges(): boolean {
+  console.log('[ComposeEmail] checkHasChanges - 开始检查')
+  console.log('[ComposeEmail] checkHasChanges - form.to:', form.value.to, 'initialTo:', initialTo.value)
+  console.log('[ComposeEmail] checkHasChanges - form.cc:', form.value.cc, 'initialCc:', initialCc.value)
+  console.log('[ComposeEmail] checkHasChanges - form.subject:', form.value.subject, 'initialSubject:', initialSubject.value)
+  console.log('[ComposeEmail] checkHasChanges - form.body length:', form.value.body?.length, 'initialBody length:', initialBody.value?.length)
+  console.log('[ComposeEmail] checkHasChanges - form.body:', form.value.body?.substring(0, 100))
+  console.log('[ComposeEmail] checkHasChanges - initialBody:', initialBody.value?.substring(0, 100))
+  console.log('[ComposeEmail] checkHasChanges - attachments:', attachments.value.length, 'initialAttachments:', initialAttachments.value.length)
+
+  // 比较收件人
+  if (form.value.to.length !== initialTo.value.length ||
+      !form.value.to.every((addr, i) => addr === initialTo.value[i])) {
+    console.log('[ComposeEmail] checkHasChanges - 收件人有变化')
+    return true
+  }
+
+  // 比较抄送
+  if (form.value.cc.length !== initialCc.value.length ||
+      !form.value.cc.every((addr, i) => addr === initialCc.value[i])) {
+    console.log('[ComposeEmail] checkHasChanges - 抄送有变化')
+    return true
+  }
+
+  // 比较主题
+  if (form.value.subject !== initialSubject.value) {
+    console.log('[ComposeEmail] checkHasChanges - 主题有变化')
+    return true
+  }
+
+  // 比较正文
+  if (form.value.body !== initialBody.value) {
+    console.log('[ComposeEmail] checkHasChanges - 正文有变化')
+    console.log('[ComposeEmail] checkHasChanges - body length:', form.value.body?.length, 'initialBody length:', initialBody.value?.length)
+    console.log('[ComposeEmail] checkHasChanges - body === initialBody:', form.value.body === initialBody.value)
+    // 找出不同的位置
+    if (form.value.body && initialBody.value) {
+      for (let i = 0; i < Math.max(form.value.body.length, initialBody.value.length); i++) {
+        if (form.value.body[i] !== initialBody.value[i]) {
+          console.log(`[ComposeEmail] checkHasChanges - 差异位置 ${i}: body="${form.value.body[i]}" initial="${initialBody.value[i]}"`)
+          if (i > 10) break // 只显示前10个差异
+        }
+      }
+    }
+    return true
+  }
+
+  // 比较附件数量
+  if (attachments.value.length !== initialAttachments.value.length) {
+    console.log('[ComposeEmail] checkHasChanges - 附件有变化')
+    return true
+  }
+
+  console.log('[ComposeEmail] checkHasChanges - 无变化')
+  return false
+}
+
+// 关闭确认对话框 - 保存草稿
+async function handleCloseSave() {
+  showCloseConfirm.value = false
+  await handleSaveDraft()
+  emit('close')
+}
+
+// 关闭确认对话框 - 不保存
+function handleCloseDiscard() {
+  showCloseConfirm.value = false
+  emit('close')
+}
+
+// 关闭确认对话框 - 取消
+function handleCloseCancel() {
+  showCloseConfirm.value = false
+}
+
+// 暴露保存草稿方法，供父组件调用
+defineExpose({
+  saveDraft: handleSaveDraft,
+  hasChanges: checkHasChanges
+})
 </script>
 

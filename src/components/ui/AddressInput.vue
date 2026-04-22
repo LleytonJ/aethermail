@@ -190,7 +190,7 @@ onUnmounted(() => {
   font-size: 0.75rem;
   color: var(--text-tertiary);
   padding-top: 0.375rem;
-  width: 2rem;
+  min-width: 3rem;
   flex-shrink: 0;
 }
 

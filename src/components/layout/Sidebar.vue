@@ -106,8 +106,6 @@ const composeStore = useComposeStore()
 
 // 钓鱼邮件未读数量
 const phishingUnreadCount = ref(0)
-// 星标邮件数量
-const starredCount = ref(0)
 
 // 加载钓鱼邮件未读数量
 async function loadPhishingUnreadCount() {
@@ -126,9 +124,9 @@ async function loadStarredCount() {
   const account = accountStore.activeAccount
   if (account) {
     try {
-      starredCount.value = await getStarredCount(account.id)
+      mailboxStore.starredCount = await getStarredCount(account.id)
     } catch {
-      starredCount.value = 0
+      mailboxStore.starredCount = 0
     }
   }
 }
@@ -209,6 +207,17 @@ watch(
   }
 )
 
+// 监听钓鱼邮件列表长度变化（当邮件被移除或添加时）
+watch(
+  () => mailboxStore.emails.length,
+  (newLength, oldLength) => {
+    // 如果当前在钓鱼邮件文件夹，列表长度变化时刷新未读数量
+    if (mailboxStore.currentFolder === 'phishing' && newLength !== oldLength) {
+      loadPhishingUnreadCount()
+    }
+  }
+)
+
 // 监听同步完成，更新钓鱼邮件未读数量
 watch(
   () => mailboxStore.syncing,
@@ -225,7 +234,7 @@ watch(
 
 const folders = computed(() => [
   { id: 'inbox', icon: Inbox, label: '收件箱', count: mailboxStore.unreadCount },
-  { id: 'starred', icon: Star, label: '星标邮件', count: starredCount.value },
+  { id: 'starred', icon: Star, label: '星标邮件', count: mailboxStore.starredCount },
   { id: 'sent', icon: Send, label: '已发送', count: 0 },  // 已发送不显示计数
   { id: 'drafts', icon: FileText, label: '草稿箱', count: mailboxStore.draftCount },  // 草稿显示计数作为提醒
   { id: 'phishing', icon: ShieldAlert, label: '钓鱼邮件', count: phishingUnreadCount.value },
@@ -233,6 +242,12 @@ const folders = computed(() => [
 ])
 
 async function handleFolderClick(folderId: string) {
+  // 如果正在撰写邮件，需要先确认
+  if (composeStore.isOpen) {
+    composeStore.setPendingAction({ type: 'switchFolder', folderId })
+    return
+  }
+
   mailboxStore.setCurrentFolder(folderId)
   mailboxStore.clearSelection()
   const account = accountStore.activeAccount
@@ -273,10 +288,8 @@ async function loadPhishingEmails(accountId: string) {
 async function loadStarredEmails(accountId: string) {
   mailboxStore.loading = true
   try {
-    const emails = await getStarredEmails(accountId)
-    mailboxStore.emails = emails
-    // 更新星标数量
-    starredCount.value = await getStarredCount(accountId)
+    mailboxStore.emails = await getStarredEmails(accountId)
+    mailboxStore.starredCount = await getStarredCount(accountId)
   } catch (e) {
     console.error('加载星标邮件失败:', e)
   } finally {

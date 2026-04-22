@@ -39,6 +39,15 @@ export interface ComposeState {
   }
 }
 
+/**
+ * 待执行的操作（用于切换确认）
+ */
+export interface PendingAction {
+  type: 'switchFolder' | 'selectEmail'
+  folderId?: string
+  emailId?: string
+}
+
 export const useComposeStore = defineStore('compose', () => {
   // 状态
   const state = ref<ComposeState>({
@@ -49,10 +58,14 @@ export const useComposeStore = defineStore('compose', () => {
   // 附件列表
   const attachments = ref<ComposeAttachment[]>([])
 
+  // 待执行的操作（切换文件夹或选择邮件时需要先确认）
+  const pendingAction = ref<PendingAction | null>(null)
+
   // 计算属性
   const isOpen = computed(() => state.value.isOpen)
   const mode = computed(() => state.value.mode)
   const hasAttachments = computed(() => attachments.value.length > 0)
+  const currentDraftId = computed(() => state.value.draft?.draftId)
 
   // 打开撰写新邮件
   function openNewEmail() {
@@ -122,12 +135,24 @@ export const useComposeStore = defineStore('compose', () => {
     attachments.value = []
   }
 
+  // 设置待执行的操作
+  function setPendingAction(action: PendingAction) {
+    pendingAction.value = action
+  }
+
+  // 清除待执行的操作
+  function clearPendingAction() {
+    pendingAction.value = null
+  }
+
   return {
     state,
     attachments,
+    pendingAction,
     isOpen,
     mode,
     hasAttachments,
+    currentDraftId,
     openNewEmail,
     openReply,
     openForward,
@@ -135,6 +160,8 @@ export const useComposeStore = defineStore('compose', () => {
     close,
     addAttachment,
     removeAttachment,
-    clearAttachments
+    clearAttachments,
+    setPendingAction,
+    clearPendingAction
   }
 })

@@ -719,6 +719,7 @@ impl Database {
     }
 
     /// Update phishing status for an email
+    /// Also updates the folder: 'inbox' for non-phishing, 'phishing' for phishing emails
     pub async fn update_phishing_status(
         &self,
         id: &str,
@@ -726,20 +727,25 @@ impl Database {
         phishing_reasons: Option<String>,
         user_overridden: Option<bool>,
     ) -> Result<(), String> {
+        // 根据 is_phishing 状态决定 folder
+        let folder = if is_phishing { "phishing" } else { "inbox" };
+
         // 如果提供了 user_overridden，则更新它
         if let Some(overridden) = user_overridden {
-            sqlx::query("UPDATE emails SET is_phishing = ?, phishing_reasons = ?, user_overridden = ? WHERE id = ?")
+            sqlx::query("UPDATE emails SET is_phishing = ?, phishing_reasons = ?, user_overridden = ?, folder = ? WHERE id = ?")
                 .bind(is_phishing as i32)
                 .bind(phishing_reasons)
                 .bind(overridden as i32)
+                .bind(folder)
                 .bind(id)
                 .execute(&self.pool)
                 .await
                 .map_err(|e| format!("更新钓鱼状态失败: {}", e))?;
         } else {
-            sqlx::query("UPDATE emails SET is_phishing = ?, phishing_reasons = ? WHERE id = ?")
+            sqlx::query("UPDATE emails SET is_phishing = ?, phishing_reasons = ?, folder = ? WHERE id = ?")
                 .bind(is_phishing as i32)
                 .bind(phishing_reasons)
+                .bind(folder)
                 .bind(id)
                 .execute(&self.pool)
                 .await
@@ -960,8 +966,12 @@ impl Database {
 
     /// Restore email from trash to inbox or phishing folder
     pub async fn restore_email(&self, id: &str, is_phishing: bool) -> Result<(), String> {
-        sqlx::query("UPDATE emails SET deleted_at = NULL, is_phishing = ? WHERE id = ?")
+        // 根据 is_phishing 状态决定 folder
+        let folder = if is_phishing { "phishing" } else { "inbox" };
+
+        sqlx::query("UPDATE emails SET deleted_at = NULL, is_phishing = ?, folder = ? WHERE id = ?")
             .bind(is_phishing as i32)
+            .bind(folder)
             .bind(id)
             .execute(&self.pool)
             .await

@@ -65,8 +65,10 @@
           :key="email.id"
           :email="email"
           :selected="selectedEmailId === email.id"
+          :show-delete="store.currentFolder === 'drafts'"
           @click="handleSelect(email.id)"
           @toggleStar="store.toggleStar(email.id)"
+          @delete="handleDelete(email.id)"
         />
       </div>
     </div>
@@ -76,6 +78,18 @@
       {{ store.emails.length }} 封邮件
       <span v-if="store.unreadCount > 0"> · {{ store.unreadCount }} 封未读</span>
     </div>
+
+    <!-- 删除确认对话框 -->
+    <ConfirmDialog
+      :is-open="showDeleteConfirm"
+      title="删除草稿"
+      message="确定要删除这个草稿吗？删除后将无法恢复。"
+      confirm-text="删除"
+      cancel-text="取消"
+      danger
+      @confirm="confirmDelete"
+      @cancel="cancelDelete"
+    />
   </div>
 </template>
 
@@ -83,15 +97,22 @@
 import { ref, computed } from 'vue'
 import { useMailboxStore } from '@/stores/mailbox'
 import { useComposeStore } from '@/stores/compose'
+import { useNotificationStore } from '@/stores/notification'
 import { getDraftDetail, getDraftAttachments } from '@/services/email/emailService'
 import { Search, Inbox, CheckSquare, RefreshCw, MoreVertical } from 'lucide-vue-next'
 import Skeleton from '../ui/Skeleton.vue'
 import EmailListItem from '../email/EmailListItem.vue'
+import ConfirmDialog from '../ui/ConfirmDialog.vue'
 
 const store = useMailboxStore()
 const composeStore = useComposeStore()
+const notificationStore = useNotificationStore()
 const searchQuery = ref('')
 const selectedEmailId = computed(() => store.selectedEmailId)
+
+// 删除确认对话框状态
+const showDeleteConfirm = ref(false)
+const deletingDraftId = ref<string | null>(null)
 
 const filteredEmails = computed(() => {
   if (!searchQuery.value) return store.emails
@@ -117,6 +138,19 @@ const emptyMessage = computed(() => {
 
 function handleSelect(emailId: string) {
   const email = store.emails.find(e => e.id === emailId)
+
+  // 如果正在撰写邮件，需要先确认（除非是选择当前编辑的草稿）
+  if (composeStore.isOpen) {
+    // 如果是草稿且是当前正在编辑的草稿，直接返回（不需要切换）
+    if (store.currentFolder === 'drafts' && email) {
+      const draftId = email.id.replace('draft-', '')
+      if (composeStore.currentDraftId === draftId) {
+        return // 已经在编辑这个草稿，不需要切换
+      }
+    }
+    composeStore.setPendingAction({ type: 'selectEmail', emailId })
+    return
+  }
 
   // 草稿邮件：先获取详情再打开编辑模式
   if (store.currentFolder === 'drafts' && email) {
@@ -205,5 +239,38 @@ function inferMimeType(filename: string): string {
     'txt': 'text/plain',
   }
   return mimeTypes[ext] || 'application/octet-stream'
+}
+
+// 删除草稿
+function handleDelete(emailId: string) {
+  // 检查是否正在编辑这个草稿
+  const draftId = emailId.replace('draft-', '')
+  if (composeStore.isOpen && composeStore.currentDraftId === draftId) {
+    // 正在编辑这个草稿，需要先关闭撰写页面
+    composeStore.close()
+  }
+
+  deletingDraftId.value = emailId
+  showDeleteConfirm.value = true
+}
+
+// 确认删除草稿
+async function confirmDelete() {
+  if (!deletingDraftId.value) return
+
+  showDeleteConfirm.value = false
+  try {
+    await store.deleteDraft(deletingDraftId.value)
+    notificationStore.success('删除成功', '草稿已删除')
+  } catch (e) {
+    notificationStore.error('删除失败', e instanceof Error ? e.message : '删除草稿失败')
+  }
+  deletingDraftId.value = null
+}
+
+// 取消删除
+function cancelDelete() {
+  showDeleteConfirm.value = false
+  deletingDraftId.value = null
 }
 </script>

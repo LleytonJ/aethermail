@@ -46,6 +46,13 @@
               {{ cancelText }}
             </button>
             <button
+              v-if="neutralText"
+              class="px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary border border-border-primary rounded-lg hover:bg-bg-hover transition-colors"
+              @click="handleNeutral"
+            >
+              {{ neutralText }}
+            </button>
+            <button
               v-if="confirmText"
               class="px-3 py-1.5 text-sm text-white rounded-lg transition-colors"
               :class="danger ? 'bg-danger hover:bg-danger-hover' : 'bg-accent hover:bg-accent-hover'"
@@ -70,6 +77,7 @@ interface Props {
   message?: string
   confirmText?: string
   cancelText?: string
+  neutralText?: string  // 中间按钮文本（如"不保存"）
   danger?: boolean
   closeOnBackdrop?: boolean
 }
@@ -79,6 +87,7 @@ const props = withDefaults(defineProps<Props>(), {
   message: '确定要执行此操作吗？',
   confirmText: '确认',
   cancelText: '取消',
+  neutralText: undefined,
   danger: false,
   closeOnBackdrop: true
 })
@@ -86,12 +95,17 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   confirm: []
   cancel: []
+  neutral: []  // 中间按钮事件
 }>()
 
 const dialogRef = ref<HTMLElement | null>(null)
 
 function handleConfirm() {
   emit('confirm')
+}
+
+function handleNeutral() {
+  emit('neutral')
 }
 
 function handleCancel() {

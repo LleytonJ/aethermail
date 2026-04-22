@@ -56,6 +56,15 @@
             :size="12"
             class="text-text-muted shrink-0"
           />
+          <!-- 删除按钮（仅草稿箱等显示） -->
+          <button
+            v-if="showDelete"
+            class="shrink-0 p-0.5 rounded transition-colors text-text-muted opacity-0 group-hover:opacity-100 hover:text-danger"
+            title="删除"
+            @click.stop="$emit('delete')"
+          >
+            <Trash2 :size="12" />
+          </button>
           <button
             class="shrink-0 p-0.5 rounded transition-colors"
             :class="email.isStarred ? 'text-yellow-400' : 'text-text-muted opacity-0 group-hover:opacity-100'"
@@ -74,17 +83,19 @@
 import { computed } from 'vue'
 import { useMailboxStore } from '@/stores/mailbox'
 import type { Email } from '@/stores/mailbox'
-import { Paperclip, Star } from 'lucide-vue-next'
+import { Paperclip, Star, Trash2 } from 'lucide-vue-next'
 
 interface Props {
   email: Email
   selected?: boolean
+  showDelete?: boolean  // 是否显示删除按钮（草稿箱等）
 }
 
 const props = defineProps<Props>()
 defineEmits<{
   click: []
   toggleStar: []
+  delete: []  // 删除事件
 }>()
 
 const mailboxStore = useMailboxStore()

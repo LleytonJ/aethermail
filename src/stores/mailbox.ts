@@ -231,6 +231,11 @@ export const useMailboxStore = defineStore('mailbox', () => {
         const newStarred = !email.isStarred
         await toggleStarService(id, newStarred)
         email.isStarred = newStarred
+
+        // Update starred count
+        if (email.accountId) {
+          starredCount.value = await getStarredCount(email.accountId)
+        }
       } catch (e) {
         console.error('Failed to toggle star:', e)
         throw e
