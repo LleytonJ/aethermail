@@ -320,14 +320,12 @@ async fn sync_via_pop3(account: &crate::commands::account::AccountConfig) -> Res
 
     let total_new = new_uidls.len() as u32;
 
-    // 暂时只获取最新的一封邮件（消息编号最大的）
+    // 获取最新的5封邮件（消息编号最大的）
     let emails_to_download: Vec<(u32, String)> = if !new_uidls.is_empty() {
-        // 找到消息编号最大的邮件
-        let latest = new_uidls.iter().max_by_key(|(num, _)| *num).cloned();
-        match latest {
-            Some(email) => vec![email],
-            None => vec![],
-        }
+        // 按消息编号排序，取最大的5封
+        let mut sorted: Vec<(u32, String)> = new_uidls.into_iter().collect();
+        sorted.sort_by_key(|(num, _)| std::cmp::Reverse(*num));
+        sorted.into_iter().take(5).collect()
     } else {
         vec![]
     };
@@ -457,13 +455,20 @@ async fn sync_via_imap(account: &crate::commands::account::AccountConfig) -> Res
         .filter(|uid| !existing_uids.contains(uid))
         .collect();
 
-    let total_new = new_uids.len() as u32;
+    // 获取最新的5封邮件（UID最大的）
+    let emails_to_download: Vec<u32> = new_uids
+        .into_iter()
+        .rev()  // UID列表已排序，reverse后最大的在前面
+        .take(5)
+        .collect();
 
-    // Download and save new emails (fetch the latest one for now)
+    let total_new = emails_to_download.len() as u32;
+
+    // Download and save new emails
     let mut saved = 0u32;
-    if let Some(&latest_uid) = new_uids.last() {
+    for &uid in emails_to_download.iter() {
         // 简化流程：直接获取完整邮件，避免多次 fetch 导致连接断开
-        match session.fetch_email(latest_uid).await {
+        match session.fetch_email(uid).await {
             Ok(imap_message) => {
                 let uidl = format!("{}", imap_message.uid);
                 let parsed = parse_email(&imap_message.raw_content, &uidl);
@@ -527,7 +532,7 @@ async fn sync_via_imap(account: &crate::commands::account::AccountConfig) -> Res
                 }
             }
             Err(e) => {
-                log::error!("下载邮件 UID {} 失败: {}", latest_uid, e);
+                log::error!("下载邮件 UID {} 失败: {}", uid, e);
             }
         }
     }
