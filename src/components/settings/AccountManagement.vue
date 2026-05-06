@@ -23,8 +23,10 @@
               >
                 当前
               </span>
-              <span class="text-[0.6rem] font-medium px-1.5 py-0.5 rounded-full bg-bg-tertiary text-text-tertiary">
-                POP3
+              <span
+                class="text-[0.6rem] font-medium px-1.5 py-0.5 rounded-full bg-bg-tertiary text-text-tertiary"
+              >
+                {{ account.protocol === 'imap' ? 'IMAP' : 'POP3' }}
               </span>
             </div>
             <div class="text-xs text-text-tertiary truncate">

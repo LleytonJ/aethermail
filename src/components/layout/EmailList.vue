@@ -19,6 +19,18 @@
     <!-- 工具栏 -->
     <div class="flex items-center justify-between px-2 py-1.5 border-b border-border-secondary">
       <div class="flex items-center gap-0.5">
+        <!-- 会话/单邮件切换按钮（仅收件箱显示） -->
+        <button
+          v-if="store.currentFolder === 'inbox' && store.threadGroups.length > 0"
+          class="p-1.5 rounded-md transition-colors"
+          :class="viewMode === 'thread'
+            ? 'text-accent bg-accent/10'
+            : 'text-text-muted hover:text-text-secondary hover:bg-bg-hover'"
+          :title="viewMode === 'thread' ? '切换到单邮件视图' : '切换到会话视图'"
+          @click="toggleViewMode"
+        >
+          <MessagesSquare :size="14" />
+        </button>
         <button
           class="p-1.5 rounded-md text-text-muted hover:text-text-secondary hover:bg-bg-hover transition-colors"
           title="全选"
@@ -51,14 +63,26 @@
 
       <!-- 空状态 -->
       <div
-        v-else-if="store.emails.length === 0"
+        v-else-if="(viewMode === 'thread' ? filteredThreads.length : filteredEmails.length) === 0"
         class="flex flex-col items-center justify-center h-full text-text-muted p-6"
       >
         <Inbox :size="40" class="mb-3 opacity-30" />
         <p class="text-sm">{{ emptyMessage }}</p>
       </div>
 
-      <!-- 邮件列表 -->
+      <!-- 会话列表 -->
+      <div v-else-if="viewMode === 'thread'" class="p-2 space-y-1">
+        <ThreadListItem
+          v-for="thread in filteredThreads"
+          :key="thread.threadId"
+          :thread="thread"
+          :emails="getThreadEmails(thread.messageIds)"
+          :selected="selectedThreadId === thread.threadId"
+          @select="handleSelectThread"
+        />
+      </div>
+
+      <!-- 单邮件列表 -->
       <div v-else>
         <EmailListItem
           v-for="email in filteredEmails"
@@ -75,8 +99,13 @@
 
     <!-- 底部状态栏 -->
     <div class="px-3 py-1.5 border-t border-border-secondary text-xs text-text-muted">
-      {{ store.emails.length }} 封邮件
-      <span v-if="store.unreadCount > 0"> · {{ store.unreadCount }} 封未读</span>
+      <template v-if="viewMode === 'thread'">
+        {{ store.threadGroups.length }} 个会话
+      </template>
+      <template v-else>
+        {{ store.emails.length }} 封邮件
+        <span v-if="store.unreadCount > 0"> · {{ store.unreadCount }} 封未读</span>
+      </template>
     </div>
 
     <!-- 删除确认对话框 -->
@@ -99,9 +128,10 @@ import { useMailboxStore } from '@/stores/mailbox'
 import { useComposeStore } from '@/stores/compose'
 import { useNotificationStore } from '@/stores/notification'
 import { getDraftDetail, getDraftAttachments } from '@/services/email/emailService'
-import { Search, Inbox, CheckSquare, RefreshCw, MoreVertical } from 'lucide-vue-next'
+import { Search, Inbox, CheckSquare, RefreshCw, MoreVertical, MessagesSquare } from 'lucide-vue-next'
 import Skeleton from '../ui/Skeleton.vue'
 import EmailListItem from '../email/EmailListItem.vue'
+import ThreadListItem from '../ThreadListItem.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 
 const store = useMailboxStore()
@@ -109,6 +139,10 @@ const composeStore = useComposeStore()
 const notificationStore = useNotificationStore()
 const searchQuery = ref('')
 const selectedEmailId = computed(() => store.selectedEmailId)
+const selectedThreadId = computed(() => store.selectedThreadId)
+
+// 视图模式：单邮件或会话
+const viewMode = ref<'single' | 'thread'>('single')
 
 // 删除确认对话框状态
 const showDeleteConfirm = ref(false)
@@ -124,6 +158,47 @@ const filteredEmails = computed(() => {
       email.snippet.toLowerCase().includes(query)
   )
 })
+
+// 过滤会话列表
+const filteredThreads = computed(() => {
+  if (!searchQuery.value) return store.threadGroups
+  const query = searchQuery.value.toLowerCase()
+  return store.threadGroups.filter((thread) => {
+    // 搜索会话中的邮件主题或发件人
+    const threadEmails = getThreadEmails(thread.messageIds)
+    return threadEmails.some(
+      (email) =>
+        (email.subject || '').toLowerCase().includes(query) ||
+        (email.fromName || '').toLowerCase().includes(query) ||
+        email.snippet.toLowerCase().includes(query)
+    )
+  })
+})
+
+// 获取会话中的邮件列表
+function getThreadEmails(messageIds: string[]) {
+  return messageIds
+    .map((msgId) => store.emails.find((e) => e.id === msgId))
+    .filter((e): e is NonNullable<typeof e> => e !== undefined)
+}
+
+// 切换视图模式
+function toggleViewMode() {
+  viewMode.value = viewMode.value === 'single' ? 'thread' : 'single'
+  // 清空选中状态
+  store.clearSelection()
+}
+
+// 选择会话
+function handleSelectThread(threadId: string) {
+  // 如果正在撰写邮件，需要先确认
+  if (composeStore.isOpen) {
+    composeStore.setPendingAction({ type: 'selectThread', threadId })
+    return
+  }
+
+  store.selectThread(threadId)
+}
 
 const emptyMessage = computed(() => {
   const folderNames: Record<string, string> = {

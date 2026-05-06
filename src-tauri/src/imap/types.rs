@@ -32,6 +32,12 @@ pub struct ImapMessage {
     pub uid: u32,
     /// Raw email content
     pub raw_content: String,
+    /// RFC 2822 Message-ID header (用于邮件会话追踪)
+    pub message_id: Option<String>,
+    /// In-Reply-To header (指向回复的原始邮件 Message-ID)
+    pub in_reply_to: Option<String>,
+    /// References header (完整的引用链，空格分隔的 Message-ID)
+    pub references: Option<String>,
 }
 
 /// IMAP sync result

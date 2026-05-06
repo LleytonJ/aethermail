@@ -4,7 +4,7 @@ use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
 use std::path::PathBuf;
 
-use super::models::{DbAccount, DbAttachment, DbContact, DbDraftAttachment, DbEmail, DraftUpdates, EmailFolder};
+use super::models::{DbAccount, DbAttachment, DbContact, DbDraftAttachment, DbEmail, DbThread, DraftUpdates, EmailFolder};
 
 /// Database manager
 #[derive(Clone)]
@@ -94,12 +94,24 @@ impl Database {
                 FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE
             );
 
+            -- Threads table for email conversation grouping
+            CREATE TABLE IF NOT EXISTS threads (
+                id TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL,
+                subject_base TEXT,
+                last_message_at INTEGER NOT NULL,
+                message_count INTEGER NOT NULL DEFAULT 1,
+                has_unread INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_emails_account ON emails(account_id);
             CREATE INDEX IF NOT EXISTS idx_emails_date ON emails(date);
             CREATE INDEX IF NOT EXISTS idx_emails_uidl ON emails(account_id, uidl);
             CREATE INDEX IF NOT EXISTS idx_contacts_email ON contacts(email);
             CREATE INDEX IF NOT EXISTS idx_contacts_frequency ON contacts(frequency DESC);
             CREATE INDEX IF NOT EXISTS idx_draft_attachments_email ON draft_attachments(email_id);
+            CREATE INDEX IF NOT EXISTS idx_threads_account ON threads(account_id, last_message_at DESC);
             "#,
         )
         .execute(&self.pool)
@@ -267,6 +279,40 @@ impl Database {
                 .map_err(|e| format!("创建 draft_id 索引失败: {}", e))?;
         }
 
+        // Threading 功能迁移：添加 threading header 字段
+        if !email_columns.contains(&"message_id_header".to_string()) {
+            sqlx::query("ALTER TABLE emails ADD COLUMN message_id_header TEXT")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| format!("添加 message_id_header 字段失败: {}", e))?;
+        }
+        if !email_columns.contains(&"in_reply_to_header".to_string()) {
+            sqlx::query("ALTER TABLE emails ADD COLUMN in_reply_to_header TEXT")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| format!("添加 in_reply_to_header 字段失败: {}", e))?;
+        }
+        if !email_columns.contains(&"references_header".to_string()) {
+            sqlx::query("ALTER TABLE emails ADD COLUMN references_header TEXT")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| format!("添加 references_header 字段失败: {}", e))?;
+        }
+        if !email_columns.contains(&"thread_id".to_string()) {
+            sqlx::query("ALTER TABLE emails ADD COLUMN thread_id TEXT")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| format!("添加 thread_id 字段失败: {}", e))?;
+        }
+
+        // Threading 功能迁移：创建 thread_id 索引
+        if !indexes.contains(&"idx_emails_thread".to_string()) {
+            sqlx::query("CREATE INDEX idx_emails_thread ON emails(thread_id)")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| format!("创建 thread_id 索引失败: {}", e))?;
+        }
+
         // 联系人功能迁移：检查 contacts 表是否存在
         let tables: Vec<String> = sqlx::query("SELECT name FROM sqlite_master WHERE type='table'")
             .fetch_all(&self.pool)
@@ -296,6 +342,27 @@ impl Database {
             .execute(&self.pool)
             .await
             .map_err(|e| format!("创建 contacts 表失败: {}", e))?;
+        }
+
+        // Threading 功能迁移：检查 threads 表是否存在
+        if !tables.contains(&"threads".to_string()) {
+            sqlx::query(
+                r#"
+                CREATE TABLE threads (
+                    id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL,
+                    subject_base TEXT,
+                    last_message_at INTEGER NOT NULL,
+                    message_count INTEGER NOT NULL DEFAULT 1,
+                    has_unread INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX idx_threads_account ON threads(account_id, last_message_at DESC);
+                "#,
+            )
+            .execute(&self.pool)
+            .await
+            .map_err(|e| format!("创建 threads 表失败: {}", e))?;
+            log::info!("threads 表创建完成（迁移）");
         }
 
         // 草稿附件功能迁移：检查 draft_attachments 表是否存在
@@ -437,8 +504,9 @@ impl Database {
             INSERT OR REPLACE INTO emails
             (id, account_id, uidl, folder, draft_id, from_address, from_name, to_addresses, cc_addresses,
              subject, body_text, body_html, date, is_read, is_starred, has_attachment,
-             is_phishing, phishing_reasons, user_overridden, deleted_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             is_phishing, phishing_reasons, user_overridden, deleted_at,
+             message_id_header, in_reply_to_header, references_header, thread_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&email.id)
@@ -461,6 +529,10 @@ impl Database {
         .bind(&email.phishing_reasons)
         .bind(email.user_overridden as i32)
         .bind(email.deleted_at)
+        .bind(&email.message_id_header)
+        .bind(&email.in_reply_to_header)
+        .bind(&email.references_header)
+        .bind(&email.thread_id)
         .execute(&self.pool)
         .await
         .map_err(|e| format!("保存邮件失败: {}", e))?;
@@ -483,7 +555,8 @@ impl Database {
             r#"
             SELECT id, account_id, uidl, folder, draft_id, from_address, from_name, to_addresses, cc_addresses,
                    subject, body_text, body_html, date, is_read, is_starred, has_attachment,
-                   is_phishing, phishing_reasons, user_overridden, deleted_at
+                   is_phishing, phishing_reasons, user_overridden, deleted_at,
+                   message_id_header, in_reply_to_header, references_header, thread_id
             FROM emails
             WHERE account_id = ? AND folder = 'inbox' AND deleted_at IS NULL
             ORDER BY date DESC
@@ -517,6 +590,10 @@ impl Database {
                 phishing_reasons: row.get("phishing_reasons"),
                 user_overridden: row.get::<i32, _>("user_overridden") == 1,
                 deleted_at: row.get("deleted_at"),
+                message_id_header: row.get("message_id_header"),
+                in_reply_to_header: row.get("in_reply_to_header"),
+                references_header: row.get("references_header"),
+                thread_id: row.get("thread_id"),
             })
             .collect();
 
@@ -529,7 +606,8 @@ impl Database {
             r#"
             SELECT id, account_id, uidl, folder, draft_id, from_address, from_name, to_addresses, cc_addresses,
                    subject, body_text, body_html, date, is_read, is_starred, has_attachment,
-                   is_phishing, phishing_reasons, user_overridden, deleted_at
+                   is_phishing, phishing_reasons, user_overridden, deleted_at,
+                   message_id_header, in_reply_to_header, references_header, thread_id
             FROM emails
             WHERE id = ?
             "#,
@@ -560,6 +638,10 @@ impl Database {
             phishing_reasons: row.get("phishing_reasons"),
             user_overridden: row.get::<i32, _>("user_overridden") == 1,
             deleted_at: row.get("deleted_at"),
+            message_id_header: row.get("message_id_header"),
+            in_reply_to_header: row.get("in_reply_to_header"),
+            references_header: row.get("references_header"),
+            thread_id: row.get("thread_id"),
         }))
     }
 
@@ -761,7 +843,8 @@ impl Database {
             r#"
             SELECT id, account_id, uidl, folder, draft_id, from_address, from_name, to_addresses, cc_addresses,
                    subject, body_text, body_html, date, is_read, is_starred, has_attachment,
-                   is_phishing, phishing_reasons, user_overridden, deleted_at
+                   is_phishing, phishing_reasons, user_overridden, deleted_at,
+                   message_id_header, in_reply_to_header, references_header, thread_id
             FROM emails
             WHERE account_id = ? AND folder = 'phishing' AND deleted_at IS NULL
             ORDER BY date DESC
@@ -795,6 +878,10 @@ impl Database {
                 phishing_reasons: row.get("phishing_reasons"),
                 user_overridden: row.get::<i32, _>("user_overridden") == 1,
                 deleted_at: row.get("deleted_at"),
+                message_id_header: row.get("message_id_header"),
+                in_reply_to_header: row.get("in_reply_to_header"),
+                references_header: row.get("references_header"),
+                thread_id: row.get("thread_id"),
             })
             .collect();
 
@@ -829,7 +916,8 @@ impl Database {
             r#"
             SELECT id, account_id, uidl, folder, draft_id, from_address, from_name, to_addresses, cc_addresses,
                    subject, body_text, body_html, date, is_read, is_starred, has_attachment,
-                   is_phishing, phishing_reasons, user_overridden, deleted_at
+                   is_phishing, phishing_reasons, user_overridden, deleted_at,
+                   message_id_header, in_reply_to_header, references_header, thread_id
             FROM emails
             WHERE account_id = ? AND is_starred = 1 AND folder IN ('inbox', 'sent') AND deleted_at IS NULL
             ORDER BY date DESC
@@ -863,6 +951,10 @@ impl Database {
                 phishing_reasons: row.get("phishing_reasons"),
                 user_overridden: row.get::<i32, _>("user_overridden") == 1,
                 deleted_at: row.get("deleted_at"),
+                message_id_header: row.get("message_id_header"),
+                in_reply_to_header: row.get("in_reply_to_header"),
+                references_header: row.get("references_header"),
+                thread_id: row.get("thread_id"),
             })
             .collect();
 
@@ -913,7 +1005,8 @@ impl Database {
             r#"
             SELECT id, account_id, uidl, folder, draft_id, from_address, from_name, to_addresses, cc_addresses,
                    subject, body_text, body_html, date, is_read, is_starred, has_attachment,
-                   is_phishing, phishing_reasons, user_overridden, deleted_at
+                   is_phishing, phishing_reasons, user_overridden, deleted_at,
+                   message_id_header, in_reply_to_header, references_header, thread_id
             FROM emails
             WHERE account_id = ? AND deleted_at IS NOT NULL
             ORDER BY deleted_at DESC
@@ -947,6 +1040,10 @@ impl Database {
                 phishing_reasons: row.get("phishing_reasons"),
                 user_overridden: row.get::<i32, _>("user_overridden") == 1,
                 deleted_at: row.get("deleted_at"),
+                message_id_header: row.get("message_id_header"),
+                in_reply_to_header: row.get("in_reply_to_header"),
+                references_header: row.get("references_header"),
+                thread_id: row.get("thread_id"),
             })
             .collect();
 
@@ -1011,7 +1108,8 @@ impl Database {
             r#"
             SELECT id, account_id, uidl, folder, draft_id, from_address, from_name, to_addresses, cc_addresses,
                    subject, body_text, body_html, date, is_read, is_starred, has_attachment,
-                   is_phishing, phishing_reasons, user_overridden, deleted_at
+                   is_phishing, phishing_reasons, user_overridden, deleted_at,
+                   message_id_header, in_reply_to_header, references_header, thread_id
             FROM emails
             WHERE account_id = ? AND folder = 'sent' AND deleted_at IS NULL
             ORDER BY date DESC
@@ -1045,6 +1143,10 @@ impl Database {
                 phishing_reasons: row.get("phishing_reasons"),
                 user_overridden: row.get::<i32, _>("user_overridden") == 1,
                 deleted_at: row.get("deleted_at"),
+                message_id_header: row.get("message_id_header"),
+                in_reply_to_header: row.get("in_reply_to_header"),
+                references_header: row.get("references_header"),
+                thread_id: row.get("thread_id"),
             })
             .collect();
 
@@ -1057,7 +1159,8 @@ impl Database {
             r#"
             SELECT id, account_id, uidl, folder, draft_id, from_address, from_name, to_addresses, cc_addresses,
                    subject, body_text, body_html, date, is_read, is_starred, has_attachment,
-                   is_phishing, phishing_reasons, user_overridden, deleted_at
+                   is_phishing, phishing_reasons, user_overridden, deleted_at,
+                   message_id_header, in_reply_to_header, references_header, thread_id
             FROM emails
             WHERE account_id = ? AND folder = 'drafts' AND deleted_at IS NULL
             ORDER BY date DESC
@@ -1091,6 +1194,10 @@ impl Database {
                 phishing_reasons: row.get("phishing_reasons"),
                 user_overridden: row.get::<i32, _>("user_overridden") == 1,
                 deleted_at: row.get("deleted_at"),
+                message_id_header: row.get("message_id_header"),
+                in_reply_to_header: row.get("in_reply_to_header"),
+                references_header: row.get("references_header"),
+                thread_id: row.get("thread_id"),
             })
             .collect();
 
@@ -1225,7 +1332,8 @@ impl Database {
             r#"
             SELECT id, account_id, uidl, folder, draft_id, from_address, from_name, to_addresses, cc_addresses,
                    subject, body_text, body_html, date, is_read, is_starred, has_attachment,
-                   is_phishing, phishing_reasons, user_overridden, deleted_at
+                   is_phishing, phishing_reasons, user_overridden, deleted_at,
+                   message_id_header, in_reply_to_header, references_header, thread_id
             FROM emails
             WHERE draft_id = ? AND folder = 'drafts'
             "#,
@@ -1256,6 +1364,10 @@ impl Database {
             phishing_reasons: row.get("phishing_reasons"),
             user_overridden: row.get::<i32, _>("user_overridden") == 1,
             deleted_at: row.get("deleted_at"),
+            message_id_header: row.get("message_id_header"),
+            in_reply_to_header: row.get("in_reply_to_header"),
+            references_header: row.get("references_header"),
+            thread_id: row.get("thread_id"),
         }))
     }
 
@@ -1504,5 +1616,183 @@ impl Database {
             .map_err(|e| format!("删除草稿附件失败: {}", e))?;
 
         Ok(())
+    }
+
+    // ==================== 邮件会话功能方法 ====================
+
+    /// Upsert a thread - creates new or updates if exists
+    pub async fn upsert_thread(&self, thread: &DbThread) -> Result<(), String> {
+        sqlx::query(
+            r#"
+            INSERT INTO threads (id, account_id, subject_base, last_message_at, message_count, has_unread)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                subject_base = COALESCE(?, subject_base),
+                last_message_at = ?,
+                message_count = ?,
+                has_unread = ?
+            "#,
+        )
+        .bind(&thread.id)
+        .bind(&thread.account_id)
+        .bind(&thread.subject_base)
+        .bind(thread.last_message_at)
+        .bind(thread.message_count)
+        .bind(thread.has_unread as i32)
+        .bind(&thread.subject_base)
+        .bind(thread.last_message_at)
+        .bind(thread.message_count)
+        .bind(thread.has_unread as i32)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| format!("保存会话失败: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Batch update thread_id for emails (called after frontend computes threads)
+    pub async fn assign_thread_ids(&self, assignments: &[(&str, &str)]) -> Result<(), String> {
+        for (email_id, thread_id) in assignments {
+            sqlx::query("UPDATE emails SET thread_id = ? WHERE id = ?")
+                .bind(thread_id)
+                .bind(email_id)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| format!("更新邮件会话 ID 失败: {}", e))?;
+        }
+
+        Ok(())
+    }
+
+    /// Get all threads for an account
+    pub async fn get_threads_for_account(&self, account_id: &str) -> Result<Vec<DbThread>, String> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, account_id, subject_base, last_message_at, message_count, has_unread
+            FROM threads
+            WHERE account_id = ?
+            ORDER BY last_message_at DESC
+            "#,
+        )
+        .bind(account_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| format!("获取会话列表失败: {}", e))?;
+
+        let threads = rows
+            .into_iter()
+            .map(|row| DbThread {
+                id: row.get("id"),
+                account_id: row.get("account_id"),
+                subject_base: row.get("subject_base"),
+                last_message_at: row.get("last_message_at"),
+                message_count: row.get("message_count"),
+                has_unread: row.get::<i32, _>("has_unread") == 1,
+            })
+            .collect();
+
+        Ok(threads)
+    }
+
+    /// Get all emails in a thread by thread_id
+    pub async fn get_thread_emails(&self, thread_id: &str) -> Result<Vec<DbEmail>, String> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, account_id, uidl, folder, draft_id, from_address, from_name, to_addresses, cc_addresses,
+                   subject, body_text, body_html, date, is_read, is_starred, has_attachment,
+                   is_phishing, phishing_reasons, user_overridden, deleted_at,
+                   message_id_header, in_reply_to_header, references_header, thread_id
+            FROM emails
+            WHERE thread_id = ? AND deleted_at IS NULL
+            ORDER BY date ASC
+            "#,
+        )
+        .bind(thread_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| format!("获取会话邮件失败: {}", e))?;
+
+        let emails = rows
+            .into_iter()
+            .map(|row| DbEmail {
+                id: row.get("id"),
+                account_id: row.get("account_id"),
+                uidl: row.get("uidl"),
+                folder: row.get("folder"),
+                draft_id: row.get("draft_id"),
+                from_address: row.get("from_address"),
+                from_name: row.get("from_name"),
+                to_addresses: row.get("to_addresses"),
+                cc_addresses: row.get("cc_addresses"),
+                subject: row.get("subject"),
+                body_text: row.get("body_text"),
+                body_html: row.get("body_html"),
+                date: row.get("date"),
+                is_read: row.get::<i32, _>("is_read") == 1,
+                is_starred: row.get::<i32, _>("is_starred") == 1,
+                has_attachment: row.get::<i32, _>("has_attachment") == 1,
+                is_phishing: row.get::<i32, _>("is_phishing") == 1,
+                phishing_reasons: row.get("phishing_reasons"),
+                user_overridden: row.get::<i32, _>("user_overridden") == 1,
+                deleted_at: row.get("deleted_at"),
+                message_id_header: row.get("message_id_header"),
+                in_reply_to_header: row.get("in_reply_to_header"),
+                references_header: row.get("references_header"),
+                thread_id: row.get("thread_id"),
+            })
+            .collect();
+
+        Ok(emails)
+    }
+
+    /// Get emails with threading headers for computation (all folders, no thread_id filter)
+    pub async fn get_emails_for_threading(&self, account_id: &str) -> Result<Vec<DbEmail>, String> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, account_id, uidl, folder, draft_id, from_address, from_name, to_addresses, cc_addresses,
+                   subject, body_text, body_html, date, is_read, is_starred, has_attachment,
+                   is_phishing, phishing_reasons, user_overridden, deleted_at,
+                   message_id_header, in_reply_to_header, references_header, thread_id
+            FROM emails
+            WHERE account_id = ? AND folder = 'inbox' AND deleted_at IS NULL
+            ORDER BY date DESC
+            "#,
+        )
+        .bind(account_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| format!("获取邮件列表失败: {}", e))?;
+
+        let emails = rows
+            .into_iter()
+            .map(|row| DbEmail {
+                id: row.get("id"),
+                account_id: row.get("account_id"),
+                uidl: row.get("uidl"),
+                folder: row.get("folder"),
+                draft_id: row.get("draft_id"),
+                from_address: row.get("from_address"),
+                from_name: row.get("from_name"),
+                to_addresses: row.get("to_addresses"),
+                cc_addresses: row.get("cc_addresses"),
+                subject: row.get("subject"),
+                body_text: row.get("body_text"),
+                body_html: row.get("body_html"),
+                date: row.get("date"),
+                is_read: row.get::<i32, _>("is_read") == 1,
+                is_starred: row.get::<i32, _>("is_starred") == 1,
+                has_attachment: row.get::<i32, _>("has_attachment") == 1,
+                is_phishing: row.get::<i32, _>("is_phishing") == 1,
+                phishing_reasons: row.get("phishing_reasons"),
+                user_overridden: row.get::<i32, _>("user_overridden") == 1,
+                deleted_at: row.get("deleted_at"),
+                message_id_header: row.get("message_id_header"),
+                in_reply_to_header: row.get("in_reply_to_header"),
+                references_header: row.get("references_header"),
+                thread_id: row.get("thread_id"),
+            })
+            .collect();
+
+        Ok(emails)
     }
 }

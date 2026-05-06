@@ -123,8 +123,38 @@ fn load_accounts_file() -> Result<AccountsFile, String> {
     file.read_to_string(&mut content)
         .map_err(|e| format!("读取配置文件失败: {}", e))?;
 
-    serde_json::from_str(&content)
-        .map_err(|e| format!("解析配置文件失败: {}", e))
+    let mut accounts_file: AccountsFile = serde_json::from_str(&content)
+        .map_err(|e| format!("解析配置文件失败: {}", e))?;
+
+    // 迁移旧账户：根据服务器配置检测协议类型
+    // 旧账户可能没有 protocol 字段，serde 会使用默认值 Pop3
+    // 但如果 imap_host 有值，说明实际上是 IMAP 账户
+    let needs_save = migrate_account_protocols(&mut accounts_file.accounts);
+    if needs_save {
+        save_accounts_file(&accounts_file)?;
+    }
+
+    Ok(accounts_file)
+}
+
+/// 迁移账户协议类型（修复旧账户的 protocol 字段）
+fn migrate_account_protocols(accounts: &mut [AccountConfig]) -> bool {
+    let mut changed = false;
+    for account in accounts {
+        // 如果 imap_host 有值但 protocol 是 Pop3，修正为 Imap
+        if !account.imap_host.is_empty() && account.protocol == ProtocolType::Pop3 {
+            account.protocol = ProtocolType::Imap;
+            changed = true;
+            println!("[AccountMigration] 账户 {} 迁移为 IMAP (imap_host={})", account.email, account.imap_host);
+        }
+        // 如果 pop3_host 有值但 protocol 是 Imap，修正为 Pop3
+        if !account.pop3_host.is_empty() && account.protocol == ProtocolType::Imap && account.imap_host.is_empty() {
+            account.protocol = ProtocolType::Pop3;
+            changed = true;
+            println!("[AccountMigration] 账户 {} 迁移为 POP3 (pop3_host={})", account.email, account.pop3_host);
+        }
+    }
+    changed
 }
 
 /// Save accounts to configuration file

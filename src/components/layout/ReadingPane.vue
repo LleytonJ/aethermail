@@ -2,7 +2,7 @@
   <div class="flex flex-col h-full">
     <!-- 空状态 -->
     <div
-      v-if="!mailboxStore.selectedEmailId"
+      v-if="!mailboxStore.selectedEmailId && !mailboxStore.selectedThreadId"
       class="flex-1 flex flex-col items-center justify-center text-text-muted"
     >
       <div class="w-20 h-20 rounded-full bg-bg-tertiary/50 flex items-center justify-center mb-4">
@@ -11,8 +11,113 @@
       <p class="text-sm">选择一封邮件进行阅读</p>
     </div>
 
-    <!-- 邮件内容 -->
-    <div v-else class="flex flex-col h-full animate-fade-in">
+    <!-- 会话视图：左侧邮件列表，右侧邮件详情 -->
+    <div v-else-if="mailboxStore.selectedThreadId" class="flex h-full">
+      <!-- 左侧：会话邮件列表 -->
+      <div class="w-1/3 border-r border-border-secondary overflow-y-auto">
+        <ThreadView
+          :emails="mailboxStore.threadEmails"
+          :thread-subject="threadSubject"
+          :selected-email-id="mailboxStore.selectedEmailId"
+          @select-email="handleSelectEmailInThread"
+          @toggle-star="handleToggleStarInThread"
+        />
+      </div>
+
+      <!-- 右侧：选中邮件的详情 -->
+      <div class="w-2/3 flex flex-col h-full">
+        <!-- 加载状态 -->
+        <div
+          v-if="mailboxStore.loadingThread"
+          class="flex-1 flex items-center justify-center text-text-muted"
+        >
+          <p class="text-sm">加载中...</p>
+        </div>
+
+        <!-- 未选中邮件 -->
+        <div
+          v-else-if="!mailboxStore.selectedEmailId"
+          class="flex-1 flex items-center justify-center text-text-muted"
+        >
+          <p class="text-sm">点击左侧邮件查看详情</p>
+        </div>
+
+        <!-- 邮件详情 -->
+        <div v-else class="flex flex-col h-full animate-fade-in">
+          <!-- 钓鱼邮件警告 Banner -->
+          <div
+            v-if="selectedThreadEmail?.isPhishing"
+            class="px-4 py-2 bg-danger/10 border-b border-danger/20"
+          >
+            <div class="flex items-center gap-2 text-danger text-sm">
+              <ShieldAlert :size="16" />
+              <span class="font-medium">此邮件被判定为钓鱼邮件</span>
+            </div>
+          </div>
+
+          <!-- 工具栏 -->
+          <div class="flex items-center justify-between px-4 py-2 border-b border-border-secondary">
+            <div class="flex items-center gap-1">
+              <button
+                class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-bg-hover rounded-md transition-colors"
+                @click="handleReply"
+              >
+                <Reply :size="14" />
+                回复
+              </button>
+              <button
+                class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-bg-hover rounded-md transition-colors"
+                @click="handleForward"
+              >
+                <Forward :size="14" />
+                转发
+              </button>
+            </div>
+            <div class="flex items-center gap-0.5">
+              <button
+                class="p-1.5 rounded-md text-text-muted hover:text-yellow-400 hover:bg-bg-hover transition-colors"
+                title="星标"
+                @click="selectedThreadEmail && handleToggleStarInThread(selectedThreadEmail.id)"
+              >
+                <Star
+                  :size="14"
+                  :fill="selectedThreadEmail?.isStarred ? 'currentColor' : 'none'"
+                  :class="selectedThreadEmail?.isStarred ? 'text-yellow-400' : ''"
+                />
+              </button>
+              <button
+                class="p-1.5 rounded-md text-text-muted hover:text-danger hover:bg-bg-hover transition-colors"
+                title="删除"
+                @click="showDeleteConfirm"
+              >
+                <Trash2 :size="14" />
+              </button>
+            </div>
+          </div>
+
+          <!-- 邮件头部 -->
+          <EmailHeader v-if="selectedThreadEmail" :email="selectedThreadEmail" />
+
+          <!-- 邮件正文 -->
+          <div class="flex-1 overflow-y-auto">
+            <EmailBody
+              v-if="selectedThreadEmail"
+              :html="selectedThreadEmail.bodyHtml ?? undefined"
+              :is-phishing="selectedThreadEmail?.isPhishing"
+            />
+          </div>
+
+          <!-- 附件列表 -->
+          <AttachmentList
+            v-if="selectedThreadEmail?.attachments?.length"
+            :attachments="selectedThreadEmail.attachments"
+          />
+        </div>
+      </div>
+    </div>
+
+    <!-- 单邮件内容 -->
+    <div v-else-if="mailboxStore.selectedEmailId" class="flex flex-col h-full animate-fade-in">
       <!-- 钓鱼邮件警告 Banner -->
       <div
         v-if="currentEmail?.isPhishing"
@@ -213,6 +318,7 @@ import { Mail, Reply, Forward, Star, Archive, Trash2, ShieldAlert, Undo2, Rotate
 import EmailHeader from '../email/EmailHeader.vue'
 import EmailBody from '../email/EmailBody.vue'
 import AttachmentList from '../email/AttachmentList.vue'
+import ThreadView from '../ThreadView.vue'
 import ConfirmDialog from '../ui/ConfirmDialog.vue'
 import { updatePhishingStatus } from '@/services/email/emailService'
 
@@ -222,10 +328,57 @@ const composeStore = useComposeStore()
 
 const currentEmail = computed(() => mailboxStore.selectedEmail)
 
+// 会话模式下选中的邮件
+const selectedThreadEmail = computed(() => {
+  if (!mailboxStore.selectedEmailId || !mailboxStore.selectedThreadId) return null
+  return mailboxStore.threadEmails.find(e => e.id === mailboxStore.selectedEmailId) || null
+})
+
+// 会话主题（从会话邮件中获取）
+const threadSubject = computed(() => {
+  if (mailboxStore.threadEmails.length === 0) return null
+  return mailboxStore.threadEmails[0]?.subject || null
+})
+
+// 会话中选择邮件
+function handleSelectEmailInThread(emailId: string) {
+  mailboxStore.selectEmail(emailId)
+  mailboxStore.markAsRead(emailId)
+}
+
+// 会话中切换星标
+function handleToggleStarInThread(emailId: string) {
+  mailboxStore.toggleStar(emailId)
+}
+
+// 回复邮件
+function handleReply() {
+  const email = selectedThreadEmail.value || currentEmail.value
+  if (!email) return
+
+  composeStore.openReply(
+    email.fromAddress || '',
+    email.subject || '',
+    email.bodyText || email.bodyHtml || ''
+  )
+}
+
+// 转发邮件
+function handleForward() {
+  const email = selectedThreadEmail.value || currentEmail.value
+  if (!email) return
+
+  composeStore.openForward(
+    email.subject || '',
+    email.bodyText || email.bodyHtml || ''
+  )
+}
+
 // 删除确认对话框状态
 const deleteConfirmOpen = ref(false)
 const deleteConfirmMessage = computed(() => {
-  const subject = currentEmail.value?.subject || '无主题'
+  const email = selectedThreadEmail.value || currentEmail.value
+  const subject = email?.subject || '无主题'
   return `确定要将邮件「${subject}」移至回收站吗？`
 })
 
@@ -262,74 +415,6 @@ function showDeleteConfirm() {
   deleteConfirmOpen.value = true
 }
 
-// 执行删除（移动到回收站）
-async function handleDelete() {
-  if (!currentEmail.value) return
-
-  deleteConfirmOpen.value = false
-
-  try {
-    await mailboxStore.moveToTrash(currentEmail.value.id)
-    notificationStore.success('已移至回收站', '邮件已移动到回收站')
-  } catch (e) {
-    console.error('移动邮件到回收站失败:', e)
-    notificationStore.error('删除失败', '无法移动邮件到回收站')
-  }
-}
-
-// 回复邮件
-function handleReply() {
-  if (!currentEmail.value) return
-
-  composeStore.openReply(
-    currentEmail.value.fromAddress || '',
-    currentEmail.value.subject || '',
-    currentEmail.value.bodyText || currentEmail.value.bodyHtml || ''
-  )
-}
-
-// 转发邮件
-function handleForward() {
-  if (!currentEmail.value) return
-
-  composeStore.openForward(
-    currentEmail.value.subject || '',
-    currentEmail.value.bodyText || currentEmail.value.bodyHtml || ''
-  )
-}
-
-// 将邮件移回收件箱
-async function handleMoveToInbox() {
-  if (!currentEmail.value) return
-
-  moveToInboxConfirmOpen.value = false
-
-  try {
-    // 更新钓鱼状态为 false，并标记为用户覆盖（不再重复检测）
-    await updatePhishingStatus(currentEmail.value.id, false, null, true)
-
-    // 更新本地邮件状态
-    const email = mailboxStore.emails.find(e => e.id === currentEmail.value?.id)
-    if (email) {
-      email.isPhishing = false
-      email.phishingReasons = undefined
-    }
-
-    // 从当前列表移除该邮件
-    mailboxStore.emails = mailboxStore.emails.filter(e => e.id !== currentEmail.value?.id)
-    mailboxStore.clearSelection()
-
-    // 显示成功通知
-    notificationStore.success('已移回收件箱', '邮件已标记为正常邮件')
-
-    // 刷新钓鱼邮件未读数量（通过重新加载）
-    // 这里需要触发 Sidebar 的刷新，可以通过 accountStore 的变化来触发
-  } catch (e) {
-    console.error('移回收件箱失败:', e)
-    notificationStore.error('操作失败', '无法将邮件移回收件箱')
-  }
-}
-
 // 显示恢复到收件箱确认对话框
 function showRestoreInboxConfirm() {
   restoreInboxConfirmOpen.value = true
@@ -348,6 +433,22 @@ function showPermanentDeleteConfirm() {
 // 显示移回收件箱确认对话框
 function showMoveToInboxConfirm() {
   moveToInboxConfirmOpen.value = true
+}
+
+// 执行删除（移动到回收站）
+async function handleDelete() {
+  const email = selectedThreadEmail.value || currentEmail.value
+  if (!email) return
+
+  deleteConfirmOpen.value = false
+
+  try {
+    await mailboxStore.moveToTrash(email.id)
+    notificationStore.success('已移至回收站', '邮件已移动到回收站')
+  } catch (e) {
+    console.error('移动邮件到回收站失败:', e)
+    notificationStore.error('删除失败', '无法移动邮件到回收站')
+  }
 }
 
 // 恢复邮件到收件箱
@@ -392,6 +493,35 @@ async function handlePermanentDelete() {
   } catch (e) {
     console.error('永久删除邮件失败:', e)
     notificationStore.error('删除失败', '无法永久删除邮件')
+  }
+}
+
+// 将邮件移回收件箱
+async function handleMoveToInbox() {
+  if (!currentEmail.value) return
+
+  moveToInboxConfirmOpen.value = false
+
+  try {
+    // 更新钓鱼状态为 false，并标记为用户覆盖（不再重复检测）
+    await updatePhishingStatus(currentEmail.value.id, false, null, true)
+
+    // 更新本地邮件状态
+    const email = mailboxStore.emails.find(e => e.id === currentEmail.value?.id)
+    if (email) {
+      email.isPhishing = false
+      email.phishingReasons = undefined
+    }
+
+    // 从当前列表移除该邮件
+    mailboxStore.emails = mailboxStore.emails.filter(e => e.id !== currentEmail.value?.id)
+    mailboxStore.clearSelection()
+
+    // 显示成功通知
+    notificationStore.success('已移回收件箱', '邮件已标记为正常邮件')
+  } catch (e) {
+    console.error('移回收件箱失败:', e)
+    notificationStore.error('操作失败', '无法将邮件移回收件箱')
   }
 }
 </script>

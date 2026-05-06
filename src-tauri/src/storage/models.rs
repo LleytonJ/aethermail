@@ -58,6 +58,18 @@ pub struct DbEmail {
     /// 删除时间戳（回收站功能，NULL 表示未删除）
     #[serde(default)]
     pub deleted_at: Option<i64>,
+    /// RFC 2822 Message-ID 头（用于邮件会话追踪）
+    #[serde(default)]
+    pub message_id_header: Option<String>,
+    /// In-Reply-To 头（指向回复的原始邮件 Message-ID）
+    #[serde(default)]
+    pub in_reply_to_header: Option<String>,
+    /// References 头（完整的引用链，空格分隔的 Message-ID）
+    #[serde(default)]
+    pub references_header: Option<String>,
+    /// 会话 ID（关联到 threads 表）
+    #[serde(default)]
+    pub thread_id: Option<String>,
 }
 
 /// Email folder enum
@@ -122,4 +134,19 @@ pub struct DbDraftAttachment {
     pub content: Option<String>,
     pub file_size: i64,
     pub created_at: i64,
+}
+
+/// Email thread stored in database (会话表)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DbThread {
+    pub id: String,
+    pub account_id: String,
+    /// 去掉 Re:/Fwd: 前缀的主题
+    pub subject_base: Option<String>,
+    /// 最新邮件的时间戳
+    pub last_message_at: i64,
+    /// 会话内邮件数量
+    pub message_count: i32,
+    /// 是否有未读邮件
+    pub has_unread: bool,
 }

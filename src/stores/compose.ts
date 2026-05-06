@@ -43,9 +43,10 @@ export interface ComposeState {
  * 待执行的操作（用于切换确认）
  */
 export interface PendingAction {
-  type: 'switchFolder' | 'selectEmail'
+  type: 'switchFolder' | 'selectEmail' | 'selectThread'
   folderId?: string
   emailId?: string
+  threadId?: string
 }
 
 export const useComposeStore = defineStore('compose', () => {

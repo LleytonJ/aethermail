@@ -137,6 +137,11 @@ pub fn run() {
             commands::get_contact_by_email,
             commands::update_contact,
             commands::delete_contact,
+            // Thread commands (邮件会话)
+            commands::get_threads,
+            commands::get_thread_emails,
+            commands::assign_threads,
+            commands::get_emails_for_threading,
         ])
         .setup(|app| {
             // Initialize database

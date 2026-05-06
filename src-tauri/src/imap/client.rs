@@ -9,6 +9,7 @@ use tokio_native_tls::{TlsConnector, TlsStream};
 use tokio_util::compat::TokioAsyncReadCompatExt;
 use futures::StreamExt;
 use std::time::Duration;
+use mail_parser::{MessageParser, HeaderValue};
 
 use super::types::*;
 
@@ -257,9 +258,65 @@ impl ImapSession {
         // Convert bytes to string
         let raw_content = String::from_utf8_lossy(&body_bytes).to_string();
 
+        // Parse threading headers using mail-parser
+        let parser = MessageParser::new();
+        let message = parser.parse(&body_bytes);
+
+        let (message_id, in_reply_to, references) = if let Some(msg) = message {
+            // Message-ID
+            let msg_id = msg.message_id().map(|s| s.to_string());
+
+            // In-Reply-To (can be Text or TextList)
+            let in_reply_to_val = msg.in_reply_to();
+            let in_reply = match in_reply_to_val {
+                HeaderValue::Text(t) => Some(t.to_string()),
+                HeaderValue::TextList(list) => list.first().map(|s| s.to_string()),
+                _ => {
+                    // 尝试从 raw headers 中手动查找 In-Reply-To
+                    if raw_content.contains("In-Reply-To:") {
+                        // 打印调试信息
+                        println!("[IMAP] mail-parser in_reply_to 返回非 Text/TextList: {:?}", in_reply_to_val);
+                        println!("[IMAP] raw_content 包含 In-Reply-To header");
+                    }
+                    None
+                }
+            };
+
+            // References (can be Text or TextList)
+            let refs_val = msg.references();
+            let refs = match refs_val {
+                HeaderValue::Text(t) => Some(t.to_string()),
+                HeaderValue::TextList(list) => {
+                    if list.is_empty() {
+                        None
+                    } else {
+                        Some(list.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(" "))
+                    }
+                }
+                _ => {
+                    if raw_content.contains("References:") {
+                        println!("[IMAP] mail-parser references 返回非 Text/TextList: {:?}", refs_val);
+                        println!("[IMAP] raw_content 包含 References header");
+                    }
+                    None
+                }
+            };
+
+            // 调试：打印解析结果
+            println!("[IMAP] Threading headers: message_id={:?}, in_reply_to={:?}, references={:?}", msg_id, in_reply, refs);
+
+            (msg_id, in_reply, refs)
+        } else {
+            println!("[IMAP] mail-parser 解析失败");
+            (None, None, None)
+        };
+
         Ok(ImapMessage {
             uid,
             raw_content,
+            message_id,
+            in_reply_to,
+            references,
         })
     }
 

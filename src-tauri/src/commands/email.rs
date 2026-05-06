@@ -10,7 +10,7 @@ use tauri::Emitter;
 use crate::pop3::{Pop3Client, Pop3Config, Pop3Credentials, ParsedEmail, EmailAttachment};
 use crate::imap::{ImapClient, ImapConfig, ImapCredentials};
 use crate::smtp::{SmtpClient, SmtpConfig, SmtpCredentials, EmailMessage, SendEmailResult, AttachmentData};
-use crate::storage::{Database, DbEmail, DbAttachment, DbDraftAttachment, DraftUpdates};
+use crate::storage::{Database, DbEmail, DbAttachment, DbDraftAttachment, DbThread, DraftUpdates};
 use crate::commands::account::{get_accounts, ProtocolType};
 use crate::ai::{AiClient, is_ai_available};
 use crate::utils::html_extractor::HtmlExtractor;
@@ -367,6 +367,11 @@ async fn sync_via_pop3(account: &crate::commands::account::AccountConfig) -> Res
                     phishing_reasons: phishing_reasons_json,
                     user_overridden: false,
                     deleted_at: None,
+                    // POP3 无法获取 threading headers
+                    message_id_header: None,
+                    in_reply_to_header: None,
+                    references_header: None,
+                    thread_id: None,
                 };
 
                 let email_id = db_email.id.clone();
@@ -481,6 +486,11 @@ async fn sync_via_imap(account: &crate::commands::account::AccountConfig) -> Res
                 // Create database record
                 // 钓鱼邮件放入 phishing folder，其他邮件放入 inbox
                 let folder = if is_phishing { "phishing" } else { "inbox" };
+
+                // Threading headers: generate synthetic Message-ID if missing
+                let message_id_header = imap_message.message_id.clone()
+                    .unwrap_or_else(|| format!("imap-{}-{}@synthetic", account_id, imap_message.uid));
+
                 let db_email = DbEmail {
                     id: format!("imap-{}-{}", account_id, imap_message.uid),
                     account_id: account_id.clone(),
@@ -502,6 +512,11 @@ async fn sync_via_imap(account: &crate::commands::account::AccountConfig) -> Res
                     phishing_reasons: phishing_reasons_json,
                     user_overridden: false,
                     deleted_at: None,
+                    // Threading header fields
+                    message_id_header: Some(message_id_header),
+                    in_reply_to_header: imap_message.in_reply_to.clone(),
+                    references_header: imap_message.references.clone(),
+                    thread_id: None,  // Will be assigned by frontend threading computation
                 };
 
                 let email_id = db_email.id.clone();
@@ -1206,6 +1221,11 @@ pub async fn create_draft(draft: DraftData) -> Result<String, String> {
         phishing_reasons: None,
         user_overridden: false,
         deleted_at: None,
+        // 草稿邮件无 threading headers
+        message_id_header: None,
+        in_reply_to_header: None,
+        references_header: None,
+        thread_id: None,
     };
 
     db.create_draft(&db_draft).await?;
@@ -1855,6 +1875,11 @@ pub async fn send_email(
             phishing_reasons: None,
             user_overridden: false,
             deleted_at: None,
+            // 已发送邮件无 threading headers
+            message_id_header: None,
+            in_reply_to_header: None,
+            references_header: None,
+            thread_id: None,
         };
 
         if let Err(e) = db.save_email(&sent_email).await {
@@ -2302,4 +2327,176 @@ pub async fn open_attachment_cache_directory() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+// ==================== 邮件会话功能命令 ====================
+
+/// Thread data for frontend
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Thread {
+    pub id: String,
+    pub account_id: String,
+    pub subject_base: Option<String>,
+    pub last_message_at: i64,
+    pub message_count: i32,
+    pub has_unread: bool,
+}
+
+/// Thread email data (includes threading headers)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadEmail {
+    pub id: String,
+    pub account_id: String,
+    pub from_address: Option<String>,
+    pub from_name: Option<String>,
+    pub to_addresses: Vec<String>,
+    pub cc_addresses: Vec<String>,
+    pub subject: Option<String>,
+    pub snippet: String,
+    pub date: i64,
+    pub is_read: bool,
+    pub is_starred: bool,
+    pub has_attachment: bool,
+    pub is_phishing: bool,
+    pub phishing_reasons: Option<Vec<String>>,
+    /// RFC 2822 Message-ID header
+    pub message_id_header: Option<String>,
+    /// In-Reply-To header
+    pub in_reply_to_header: Option<String>,
+    /// References header
+    pub references_header: Option<String>,
+    /// Thread ID
+    pub thread_id: Option<String>,
+}
+
+/// Thread assignment for frontend to backend
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadAssignment {
+    pub email_id: String,
+    pub thread_id: String,
+}
+
+/// Get all threads for an account
+#[tauri::command]
+pub async fn get_threads(account_id: String) -> Result<Vec<Thread>, String> {
+    let db = get_db().await?;
+    let db_threads = db.get_threads_for_account(&account_id).await?;
+
+    let threads: Vec<Thread> = db_threads
+        .into_iter()
+        .map(|t| Thread {
+            id: t.id,
+            account_id: t.account_id,
+            subject_base: t.subject_base,
+            last_message_at: t.last_message_at,
+            message_count: t.message_count,
+            has_unread: t.has_unread,
+        })
+        .collect();
+
+    Ok(threads)
+}
+
+/// Get all emails in a thread
+#[tauri::command]
+pub async fn get_thread_emails(thread_id: String) -> Result<Vec<ThreadEmail>, String> {
+    let db = get_db().await?;
+    let db_emails = db.get_thread_emails(&thread_id).await?;
+
+    let emails: Vec<ThreadEmail> = db_emails
+        .into_iter()
+        .map(|e| {
+            let snippet = e.body_text
+                .as_ref()
+                .map(|t| t.chars().take(100).collect())
+                .unwrap_or_default();
+
+            let phishing_reasons: Option<Vec<String>> = e.phishing_reasons
+                .as_ref()
+                .and_then(|r| serde_json::from_str(r).ok());
+
+            ThreadEmail {
+                id: e.id,
+                account_id: e.account_id,
+                from_address: e.from_address,
+                from_name: e.from_name,
+                to_addresses: serde_json::from_str(&e.to_addresses).unwrap_or_default(),
+                cc_addresses: serde_json::from_str(&e.cc_addresses).unwrap_or_default(),
+                subject: e.subject,
+                snippet,
+                date: e.date,
+                is_read: e.is_read,
+                is_starred: e.is_starred,
+                has_attachment: e.has_attachment,
+                is_phishing: e.is_phishing,
+                phishing_reasons,
+                message_id_header: e.message_id_header,
+                in_reply_to_header: e.in_reply_to_header,
+                references_header: e.references_header,
+                thread_id: e.thread_id,
+            }
+        })
+        .collect();
+
+    Ok(emails)
+}
+
+/// Assign thread IDs to emails (called after frontend computes threads)
+#[tauri::command]
+pub async fn assign_threads(assignments: Vec<ThreadAssignment>) -> Result<(), String> {
+    let db = get_db().await?;
+
+    // Convert to slice of tuples
+    let tuples: Vec<(&str, &str)> = assignments
+        .iter()
+        .map(|a| (a.email_id.as_str(), a.thread_id.as_str()))
+        .collect();
+
+    db.assign_thread_ids(&tuples).await?;
+
+    Ok(())
+}
+
+/// Get emails with threading headers for frontend computation
+#[tauri::command]
+pub async fn get_emails_for_threading(account_id: String) -> Result<Vec<ThreadEmail>, String> {
+    let db = get_db().await?;
+    let db_emails = db.get_emails_for_threading(&account_id).await?;
+
+    let emails: Vec<ThreadEmail> = db_emails
+        .into_iter()
+        .map(|e| {
+            let snippet = e.body_text
+                .as_ref()
+                .map(|t| t.chars().take(100).collect())
+                .unwrap_or_default();
+
+            let phishing_reasons: Option<Vec<String>> = e.phishing_reasons
+                .as_ref()
+                .and_then(|r| serde_json::from_str(r).ok());
+
+            ThreadEmail {
+                id: e.id,
+                account_id: e.account_id,
+                from_address: e.from_address,
+                from_name: e.from_name,
+                to_addresses: serde_json::from_str(&e.to_addresses).unwrap_or_default(),
+                cc_addresses: serde_json::from_str(&e.cc_addresses).unwrap_or_default(),
+                subject: e.subject,
+                snippet,
+                date: e.date,
+                is_read: e.is_read,
+                is_starred: e.is_starred,
+                has_attachment: e.has_attachment,
+                is_phishing: e.is_phishing,
+                phishing_reasons,
+                message_id_header: e.message_id_header,
+                in_reply_to_header: e.in_reply_to_header,
+                references_header: e.references_header,
+                thread_id: e.thread_id,
+            }
+        })
+        .collect();
+
+    Ok(emails)
 }

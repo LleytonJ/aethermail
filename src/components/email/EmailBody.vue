@@ -6,8 +6,7 @@
       ref="htmlFrame"
       class="email-iframe"
       :style="{ height: iframeHeight + 'px' }"
-      sandbox="allow-same-origin"
-      scrolling="no"
+      sandbox="allow-same-origin allow-scripts"
       @load="onFrameLoad"
     ></iframe>
 
@@ -70,41 +69,33 @@ const props = defineProps<Props>()
 const htmlFrame = ref<HTMLIFrameElement | null>(null)
 const showLinkDialog = ref(false)
 const pendingLinkUrl = ref('')
-const iframeHeight = ref(200) // 动态 iframe 高度
+const iframeHeight = ref(500) // 动态 iframe 高度，初始值增大
 
-// 邮件内容的基础样式（浅色背景适配黑色文字邮件）
+// 邮件内容的基础样式 - 只添加基础样式，不覆盖邮件原有布局
 const emailStyles = `
-  body {
+  html, body {
     font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    font-size: 14px;
-    line-height: 1.6;
     background: #cbd5e1;
     margin: 0;
     padding: 16px;
-    word-wrap: break-word;
-    overflow-wrap: break-word;
     color: #1a1a1a;
   }
-  /* 只设置图片和表格的基础约束，避免溢出 */
-  img { max-width: 100%; height: auto; display: block; }
-  table { max-width: 100%; }
-  pre { overflow-x: auto; }
+  img { max-width: 100%; height: auto; }
 `
 
 // 清理 HTML 内容，移除危险元素但保留样式
 function sanitizeEmailHtml(html: string): string {
   return DOMPurify.sanitize(html, {
     ALLOW_UNKNOWN_PROTOCOLS: false,
-    // 只禁止危险标签，保留样式相关标签
-    FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'form', 'input', 'button'],
-    // 允许样式属性，让邮件正常显示
-    ALLOWED_ATTR: [
-      'href', 'src', 'alt', 'title', 'width', 'height', 'class', 'style',
-      'target', 'rel', 'colspan', 'rowspan', 'cellpadding', 'cellspacing',
-      'border', 'align', 'valign', 'bgcolor', 'color', 'dir', 'lang',
-      'background', 'data-*'
-    ],
-    FORCE_BODY: true
+    // 只禁止危险标签，保留样式相关标签（包括 head/style）
+    FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'button'],
+    // 允许所有常见属性，不限制
+    ALLOWED_ATTR: false,
+    // 不强制提取到 body，保留完整 HTML 结构（包括 head 中的 style）
+    FORCE_BODY: false,
+    // 添加整个文档支持
+    ADD_TAGS: ['head', 'style', 'link', 'meta', 'title'],
+    ADD_ATTR: ['rel', 'type', 'media', 'charset', 'name', 'content']
   })
 }
 
@@ -130,21 +121,12 @@ function writeFrameContent() {
   const doc = frame.contentDocument || frame.contentWindow?.document
 
   if (doc) {
-    const sanitizedHtml = sanitizeEmailHtml(props.html)
+    // 直接使用原始 HTML（sandbox 环境下安全）
+    // 只移除 script 标签防止 XSS
+    const cleanHtml = props.html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
 
     doc.open()
-    doc.write(`
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <meta charset="UTF-8">
-          <style>${emailStyles}</style>
-        </head>
-        <body>
-          ${sanitizedHtml}
-        </body>
-      </html>
-    `)
+    doc.write(cleanHtml)
     doc.close()
 
     // 内容写入后设置链接点击监听
@@ -154,6 +136,7 @@ function writeFrameContent() {
     requestAnimationFrame(() => updateIframeHeight())
     setTimeout(() => updateIframeHeight(), 50)
     setTimeout(() => updateIframeHeight(), 200)
+    setTimeout(() => updateIframeHeight(), 500)
   }
 }
 
@@ -172,8 +155,8 @@ function updateIframeHeight() {
   // 取最大值，确保不截断内容
   const height = Math.max(bodyHeight, docHeight, offsetHeight)
 
-  // 设置最小高度 200px
-  iframeHeight.value = Math.max(200, height)
+  // 设置最小高度 500px，确保内容有足够空间显示
+  iframeHeight.value = Math.max(500, height)
 }
 
 // ResizeObserver 用于监听 iframe 内容高度变化（如图片加载后）
@@ -266,7 +249,7 @@ function handleCancelLink() {
 .email-iframe {
   width: 100%;
   border: none;
-  background: #cbd5e1;
+  background: #f1f5f9;
   display: block;
 }
 

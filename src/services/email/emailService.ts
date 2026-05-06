@@ -688,3 +688,130 @@ export async function readFileForAttachment(filePath: string): Promise<Attachmen
 export async function validateAttachmentPath(filePath: string): Promise<boolean> {
   return invoke<boolean>('validate_attachment_path', { filePath })
 }
+
+// ==================== 邮件会话功能 ====================
+
+/**
+ * 会话信息
+ */
+export interface Thread {
+  id: string
+  account_id: string
+  subject_base: string | null
+  last_message_at: number
+  message_count: number
+  has_unread: boolean
+}
+
+/**
+ * 会话邮件（含 threading headers）
+ */
+export interface ThreadEmail {
+  id: string
+  account_id: string
+  from_address: string | null
+  from_name: string | null
+  to_addresses: string[]
+  cc_addresses: string[]
+  subject: string | null
+  snippet: string
+  date: number
+  is_read: boolean
+  is_starred: boolean
+  has_attachment: boolean
+  is_phishing: boolean
+  phishing_reasons: string[] | null
+  message_id_header: string | null
+  in_reply_to_header: string | null
+  references_header: string | null
+  thread_id: string | null
+}
+
+/**
+ * 线程分配
+ */
+export interface ThreadAssignment {
+  email_id: string
+  thread_id: string
+}
+
+/**
+ * 获取账户的所有会话
+ */
+export async function getThreads(accountId: string): Promise<Thread[]> {
+  const result = await invoke<Thread[]>('get_threads', { accountId })
+  return result.map(t => ({
+    id: t.id,
+    account_id: t.account_id,
+    subject_base: t.subject_base,
+    last_message_at: t.last_message_at,
+    message_count: t.message_count,
+    has_unread: t.has_unread
+  }))
+}
+
+/**
+ * 获取会话内的所有邮件
+ */
+export async function getThreadEmails(threadId: string): Promise<ThreadEmail[]> {
+  const result = await invoke<any[]>('get_thread_emails', { threadId })
+  return result.map(e => ({
+    id: e.id,
+    account_id: e.account_id,
+    from_address: e.from_address,
+    from_name: e.from_name,
+    to_addresses: e.to_addresses,
+    cc_addresses: e.cc_addresses,
+    subject: e.subject,
+    snippet: e.snippet,
+    date: e.date,
+    is_read: e.is_read,
+    is_starred: e.is_starred,
+    has_attachment: e.has_attachment,
+    is_phishing: e.is_phishing,
+    phishing_reasons: e.phishing_reasons,
+    message_id_header: e.message_id_header,
+    in_reply_to_header: e.in_reply_to_header,
+    references_header: e.references_header,
+    thread_id: e.thread_id
+  }))
+}
+
+/**
+ * 分配线程 ID 到邮件
+ */
+export async function assignThreads(assignments: ThreadAssignment[]): Promise<void> {
+  return invoke('assign_threads', {
+    assignments: assignments.map(a => ({
+      email_id: a.email_id,
+      thread_id: a.thread_id
+    }))
+  })
+}
+
+/**
+ * 获取带 threading headers 的邮件列表（用于计算会话）
+ */
+export async function getEmailsForThreading(accountId: string): Promise<ThreadEmail[]> {
+  const result = await invoke<any[]>('get_emails_for_threading', { accountId })
+  return result.map(e => ({
+    id: e.id,
+    account_id: e.account_id,
+    from_address: e.from_address,
+    from_name: e.from_name,
+    to_addresses: e.to_addresses,
+    cc_addresses: e.cc_addresses,
+    subject: e.subject,
+    snippet: e.snippet,
+    date: e.date,
+    is_read: e.is_read,
+    is_starred: e.is_starred,
+    has_attachment: e.has_attachment,
+    is_phishing: e.is_phishing,
+    phishing_reasons: e.phishing_reasons,
+    message_id_header: e.message_id_header,
+    in_reply_to_header: e.in_reply_to_header,
+    references_header: e.references_header,
+    thread_id: e.thread_id
+  }))
+}

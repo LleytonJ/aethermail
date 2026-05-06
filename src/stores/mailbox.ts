@@ -19,8 +19,11 @@ import {
   getDraftEmails,
   getDraftCount,
   deleteDraft as deleteDraftService,
+  getEmailsForThreading,
+  assignThreads,
   type SyncResult
 } from '@/services/email/emailService'
+import { buildThreads, type ThreadGroup, type ThreadableMessage } from '@/services/threading/threadBuilder'
 import { useNotificationStore } from '@/stores/notification'
 import { useAccountStore } from '@/stores/account'
 import { parseSyncError } from '@/services/email/errorUtils'
@@ -72,6 +75,12 @@ export const useMailboxStore = defineStore('mailbox', () => {
   const sentCount = ref(0)
   const draftCount = ref(0)
 
+  // Thread state
+  const threadGroups = ref<ThreadGroup[]>([])
+  const selectedThreadId = ref<string | null>(null)
+  const threadEmails = ref<Email[]>([])
+  const loadingThread = ref(false)
+
   // Getters
   const selectedEmail = computed(() => {
     if (!selectedEmailId.value) return null
@@ -100,6 +109,10 @@ export const useMailboxStore = defineStore('mailbox', () => {
       syncProgress.value = '正在更新本地数据...'
       // Refresh email list after sync
       await loadEmails(accountId)
+
+      // 计算邮件线程分组
+      syncProgress.value = '正在计算邮件会话...'
+      await computeThreads(accountId)
 
       // 如果同步前有选中的邮件，重新加载该邮件的正文
       // 因为 loadEmails 会替换邮件列表，新对象不包含正文
@@ -346,6 +359,8 @@ export const useMailboxStore = defineStore('mailbox', () => {
 
   function clearSelection() {
     selectedEmailId.value = null
+    selectedThreadId.value = null
+    threadEmails.value = []
   }
 
   function setCurrentFolder(folder: string) {
@@ -354,6 +369,146 @@ export const useMailboxStore = defineStore('mailbox', () => {
 
   function clearError() {
     error.value = null
+  }
+
+  // ==================== 邮件会话功能 ====================
+
+  // Get selected thread
+  const selectedThread = computed(() => {
+    if (!selectedThreadId.value) return null
+    return threadGroups.value.find(t => t.threadId === selectedThreadId.value) || null
+  })
+
+  // 计算线程分组（在同步后调用）
+  async function computeThreads(accountId: string): Promise<void> {
+    try {
+      console.log('[MailboxStore] computeThreads 开始, accountId:', accountId)
+
+      // 获取带 threading headers 的邮件
+      const threadEmailsData = await getEmailsForThreading(accountId)
+      console.log('[MailboxStore] 获取到邮件数量:', threadEmailsData.length)
+
+      // 打印每封邮件的 threading headers
+      threadEmailsData.forEach(e => {
+        console.log('[MailboxStore] 邮件:', {
+          id: e.id,
+          subject: e.subject,
+          message_id: e.message_id_header,
+          in_reply_to: e.in_reply_to_header,
+          references: e.references_header
+        })
+      })
+
+      // 转换为 ThreadableMessage 格式
+      // 如果 message_id_header 为空，生成一个 synthetic ID
+      const messages: ThreadableMessage[] = threadEmailsData.map(e => {
+        const messageId = e.message_id_header || `synthetic-${e.id}`;
+        return {
+          id: e.id,
+          messageId,
+          inReplyTo: e.in_reply_to_header,
+          references: e.references_header,
+          subject: e.subject,
+          date: e.date
+        };
+      })
+
+      // 计算线程分组
+      threadGroups.value = buildThreads(messages)
+      console.log('[MailboxStore] 计算出线程数量:', threadGroups.value.length)
+      threadGroups.value.forEach(t => {
+        console.log('[MailboxStore] 线程:', {
+          threadId: t.threadId,
+          messageIds: t.messageIds,
+          count: t.messageIds.length
+        })
+      })
+
+      // 将线程分配写入数据库
+      if (threadGroups.value.length > 0) {
+        const assignments = threadGroups.value.flatMap(thread =>
+          thread.messageIds.map(msgId => ({
+            email_id: msgId,
+            thread_id: thread.threadId
+          }))
+        )
+        await assignThreads(assignments)
+      }
+
+      console.log('[MailboxStore] 计算了 %d 个线程', threadGroups.value.length)
+      threadGroups.value.forEach((t, i) => {
+        console.log('[MailboxStore] 线程 %d:', i, {
+          threadId: t.threadId,
+          messageCount: t.messageIds.length,
+          messageIds: t.messageIds.slice(0, 5) // 只显示前5个
+        });
+      })
+    } catch (e) {
+      console.error('[MailboxStore] 计算线程失败:', e)
+    }
+  }
+
+  // 选择线程并加载邮件
+  async function selectThread(threadId: string): Promise<void> {
+    console.log('[MailboxStore] selectThread 开始:', threadId)
+    selectedThreadId.value = threadId
+    loadingThread.value = true
+
+    try {
+      const threadGroup = threadGroups.value.find(t => t.threadId === threadId)
+      if (!threadGroup) {
+        console.log('[MailboxStore] 未找到线程组:', threadId)
+        threadEmails.value = []
+        return
+      }
+
+      console.log('[MailboxStore] 线程组 messageIds:', threadGroup.messageIds)
+
+      // 从 emails 中查找该线程的邮件
+      threadEmails.value = threadGroup.messageIds
+        .map(msgId => emails.value.find(e => e.id === msgId))
+        .filter((e): e is Email => e !== undefined)
+        .sort((a, b) => a.date - b.date)  // 按时间升序排列
+
+      console.log('[MailboxStore] threadEmails 数量:', threadEmails.value.length)
+      console.log('[MailboxStore] threadEmails:', threadEmails.value.map(e => ({
+        id: e.id,
+        subject: e.subject,
+        hasBody: !!e.bodyHtml || !!e.bodyText
+      })))
+
+      // 加载所有邮件的详情
+      for (const email of threadEmails.value) {
+        if (!email.bodyHtml && !email.bodyText) {
+          try {
+            const detail = await getEmailDetail(email.id)
+            if (detail) {
+              email.bodyHtml = detail.body_html
+              email.bodyText = detail.body_text
+              email.attachments = detail.attachments.map(a => ({
+                id: a.id,
+                filename: a.filename,
+                mimeType: a.mime_type,
+                size: a.size
+              }))
+            }
+          } catch (e) {
+            console.error('[MailboxStore] 加载邮件详情失败:', email.id, e)
+          }
+        }
+      }
+
+      console.log('[MailboxStore] 加载详情后 threadEmails:', threadEmails.value.map(e => ({
+        id: e.id,
+        subject: e.subject,
+        hasBody: !!e.bodyHtml || !!e.bodyText
+      })))
+    } catch (e) {
+      console.error('[MailboxStore] 加载线程邮件失败:', e)
+      threadEmails.value = []
+    } finally {
+      loadingThread.value = false
+    }
   }
 
   // 初始化 - 从 localStorage 恢复状态
@@ -380,6 +535,12 @@ export const useMailboxStore = defineStore('mailbox', () => {
     sentCount,
     draftCount,
     localUnreadCount,
+    // Thread state
+    threadGroups,
+    selectedThreadId,
+    selectedThread,
+    threadEmails,
+    loadingThread,
     sync,
     loadEmails,
     selectEmail,
@@ -392,6 +553,9 @@ export const useMailboxStore = defineStore('mailbox', () => {
     clearSelection,
     setCurrentFolder,
     clearError,
+    // Thread actions
+    computeThreads,
+    selectThread,
     init,
     saveState
   }
