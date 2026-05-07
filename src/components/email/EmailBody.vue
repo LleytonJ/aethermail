@@ -53,7 +53,6 @@
 
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
-import DOMPurify from 'dompurify'
 import { Mail } from 'lucide-vue-next'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
@@ -70,34 +69,6 @@ const htmlFrame = ref<HTMLIFrameElement | null>(null)
 const showLinkDialog = ref(false)
 const pendingLinkUrl = ref('')
 const iframeHeight = ref(500) // 动态 iframe 高度，初始值增大
-
-// 邮件内容的基础样式 - 只添加基础样式，不覆盖邮件原有布局
-const emailStyles = `
-  html, body {
-    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: #cbd5e1;
-    margin: 0;
-    padding: 16px;
-    color: #1a1a1a;
-  }
-  img { max-width: 100%; height: auto; }
-`
-
-// 清理 HTML 内容，移除危险元素但保留样式
-function sanitizeEmailHtml(html: string): string {
-  return DOMPurify.sanitize(html, {
-    ALLOW_UNKNOWN_PROTOCOLS: false,
-    // 只禁止危险标签，保留样式相关标签（包括 head/style）
-    FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'button'],
-    // 允许所有常见属性，不限制
-    ALLOWED_ATTR: false,
-    // 不强制提取到 body，保留完整 HTML 结构（包括 head 中的 style）
-    FORCE_BODY: false,
-    // 添加整个文档支持
-    ADD_TAGS: ['head', 'style', 'link', 'meta', 'title'],
-    ADD_ATTR: ['rel', 'type', 'media', 'charset', 'name', 'content']
-  })
-}
 
 // 监听 iframe 内的链接点击
 function setupLinkClickListener(doc: Document) {
