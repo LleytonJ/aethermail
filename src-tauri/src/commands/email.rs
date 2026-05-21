@@ -10,7 +10,7 @@ use tauri::Emitter;
 use crate::pop3::{Pop3Client, Pop3Config, Pop3Credentials, ParsedEmail, EmailAttachment};
 use crate::imap::{ImapClient, ImapConfig, ImapCredentials};
 use crate::smtp::{SmtpClient, SmtpConfig, SmtpCredentials, EmailMessage, SendEmailResult, AttachmentData};
-use crate::storage::{Database, DbEmail, DbAttachment, DbDraftAttachment, DbThread, DraftUpdates};
+use crate::storage::{Database, DbEmail, DbAttachment, DbDraftAttachment, DraftUpdates};
 use crate::commands::account::{get_accounts, ProtocolType};
 use crate::ai::{AiClient, is_ai_available};
 use crate::utils::html_extractor::HtmlExtractor;

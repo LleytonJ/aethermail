@@ -4,7 +4,7 @@ use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
 use std::path::PathBuf;
 
-use super::models::{DbAccount, DbAttachment, DbContact, DbDraftAttachment, DbEmail, DbThread, DraftUpdates, EmailFolder};
+use super::models::{DbAttachment, DbContact, DbDraftAttachment, DbEmail, DbThread, DraftUpdates};
 
 /// Database manager
 #[derive(Clone)]

@@ -3,7 +3,7 @@
 //! SMTP client using lettre crate for email sending.
 
 use lettre::{
-    message::{Message, MultiPart, SinglePart, header, Attachment, Body},
+    message::{Message, MultiPart, SinglePart, header, Attachment},
     transport::smtp::authentication::Credentials,
     AsyncSmtpTransport, Tokio1Executor, AsyncTransport,
 };
@@ -30,7 +30,7 @@ impl SmtpClient {
         let transport = self.build_transport();
 
         match transport {
-            Ok(mailer) => {
+            Ok(_mailer) => {
                 // Test connection by sending a test message
                 // lettre doesn't have explicit connect method, so we build a test message
                 let test_result = SmtpTestResult {
