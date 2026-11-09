@@ -175,7 +175,7 @@ import { X, Send, Loader2, Save, Paperclip, Upload } from 'lucide-vue-next'
 import { open } from '@tauri-apps/plugin-dialog'
 import { useAccountStore } from '@/stores/account'
 import { useNotificationStore } from '@/stores/notification'
-import { sendEmail, createDraft, updateDraft, sendDraft, readFileForAttachment, type AttachmentData, type DraftAttachmentData } from '@/services/email/emailService'
+import { sendEmail, createDraft, updateDraft, sendDraft, readFileForAttachment, type AttachmentData, type DraftAttachmentData, type EmailAddress, formatAddressForSend } from '@/services/email/emailService'
 import AddressInput from '@/components/ui/AddressInput.vue'
 import RichTextEditor from '@/components/ui/RichTextEditor.vue'
 import ComposeAttachmentList from '@/components/email/ComposeAttachmentList.vue'
@@ -217,10 +217,10 @@ const emit = defineEmits<{
 const accountStore = useAccountStore()
 const notificationStore = useNotificationStore()
 
-// 表单状态 - 收件人改为数组形式
+// 表单状态 - 收件人改为 EmailAddress 数组
 const form = ref({
-  to: [] as string[],
-  cc: [] as string[],
+  to: [] as EmailAddress[],
+  cc: [] as EmailAddress[],
   subject: '',
   body: ''
 })
@@ -254,8 +254,8 @@ const isSavingDraft = ref(false)
 const showCloseConfirm = ref(false)
 
 // 初始内容（用于判断是否有用户修改）
-const initialTo = ref<string[]>([])
-const initialCc = ref<string[]>([])
+const initialTo = ref<EmailAddress[]>([])
+const initialCc = ref<EmailAddress[]>([])
 const initialSubject = ref('')
 const initialBody = ref('')
 const initialAttachments = ref<ComposeAttachment[]>([])
@@ -272,8 +272,9 @@ watch(
     // 编辑草稿模式
     if (draftId && draftData) {
       currentDraftId.value = draftId
-      form.value.to = draftData.toAddresses || []
-      form.value.cc = draftData.ccAddresses || []
+      // 转换 string[] 为 EmailAddress[]
+      form.value.to = (draftData.toAddresses || []).map(addr => ({ email: addr }))
+      form.value.cc = (draftData.ccAddresses || []).map(addr => ({ email: addr }))
       form.value.subject = draftData.subject || ''
       form.value.body = draftData.bodyHtml || draftData.bodyText || ''
       // 草稿不附加新签名（保留原有内容）
@@ -306,7 +307,7 @@ watch(
       initialAttachments.value = attachments.value.map(a => ({ ...a }))
     } else if (replyTo) {
       currentDraftId.value = null
-      form.value.to = [replyTo.from]
+      form.value.to = [{ email: replyTo.from }]
       form.value.cc = []
       form.value.subject = replyTo.subject.startsWith('Re:')
         ? replyTo.subject
@@ -385,17 +386,17 @@ function validateForm(): boolean {
   }
 
   // 验证收件人格式
-  for (const email of form.value.to) {
-    if (!validateEmail(email)) {
-      errors.value.to = `无效的邮箱地址: ${email}`
+  for (const addr of form.value.to) {
+    if (!validateEmail(addr.email)) {
+      errors.value.to = `无效的邮箱地址: ${addr.email}`
       return false
     }
   }
 
   // 验证抄送格式（如果有）
-  for (const email of form.value.cc) {
-    if (!validateEmail(email)) {
-      errors.value.to = `无效的抄送地址: ${email}`
+  for (const addr of form.value.cc) {
+    if (!validateEmail(addr.email)) {
+      errors.value.to = `无效的抄送地址: ${addr.email}`
       return false
     }
   }
@@ -658,6 +659,10 @@ async function handleSend() {
 
     // 区分草稿发送和新邮件发送
     let result
+    // 格式化地址为 SMTP 兼容字符串
+    const toAddresses = form.value.to.map(formatAddressForSend)
+    const ccAddresses = form.value.cc.length > 0 ? form.value.cc.map(formatAddressForSend) : null
+
     if (currentDraftId.value) {
       // 发送草稿 - 传递当前附件数据
       result = await sendDraft(currentDraftId.value, signatureHtml, attachmentData)
@@ -665,8 +670,8 @@ async function handleSend() {
       // 发送新邮件
       result = await sendEmail(
         account.id,
-        form.value.to,
-        form.value.cc.length > 0 ? form.value.cc : null,
+        toAddresses,
+        ccAddresses,
         form.value.subject,
         form.value.body, // plain text fallback
         form.value.body, // HTML body (from rich text editor)
@@ -709,10 +714,14 @@ async function handleSaveDraft() {
   try {
     const draftAttachmentData = prepareAttachmentsForDraft()
 
+    // 转换 EmailAddress[] 为 string[]（保留显示名称信息）
+    const toAddresses = form.value.to.map(formatAddressForSend)
+    const ccAddresses = form.value.cc.map(formatAddressForSend)
+
     const draftData = {
       accountId: account.id,
-      toAddresses: form.value.to,
-      ccAddresses: form.value.cc,
+      toAddresses,
+      ccAddresses,
       subject: form.value.subject || null,
       bodyText: form.value.body.replace(/<[^>]*>/g, ''), // 提取纯文本
       bodyHtml: form.value.body,

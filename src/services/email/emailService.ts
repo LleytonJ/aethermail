@@ -20,6 +20,81 @@ export async function waitForDatabase(timeoutMs: number = 5000): Promise<boolean
 }
 
 /**
+ * 邮箱地址（支持显示名称）
+ */
+export interface EmailAddress {
+  email: string
+  name?: string
+}
+
+/**
+ * 将 EmailAddress 格式化为 SMTP 兼容的字符串
+ */
+export function formatAddressForSend(addr: EmailAddress): string {
+  if (addr.name) {
+    return `"${addr.name}" <${addr.email}>`
+  }
+  return addr.email
+}
+
+/**
+ * 解析结果
+ */
+export interface ParseResult {
+  valid: EmailAddress[]
+  invalid: string[]
+}
+
+/**
+ * 验证邮箱格式
+ */
+export function validateEmail(email: string): boolean {
+  const regex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+  return regex.test(email)
+}
+
+/**
+ * 解析邮箱地址字符串
+ * 支持格式：
+ *   - email@example.com
+ *   - "显示名称" <email@example.com>
+ *   - 显示名称 <email@example.com>
+ * 分隔符：逗号、分号、换行
+ */
+export function parseEmailAddresses(input: string): ParseResult {
+  const result: ParseResult = { valid: [], invalid: [] }
+
+  // 使用逗号、分号、换行作为分隔符
+  const parts = input.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean)
+
+  for (const part of parts) {
+    // 尝试匹配 "名称" <email> 或 名称 <email>
+    const namedMatch = part.match(/^"([^"]+)"\s*<([^>]+)>$/) ||
+                       part.match(/^([^<]+)<([^>]+)>$/)
+
+    if (namedMatch) {
+      const name = namedMatch[1].trim()
+      const email = namedMatch[2].trim().toLowerCase()
+      if (validateEmail(email)) {
+        result.valid.push({ email, name })
+      } else {
+        result.invalid.push(part)
+      }
+    } else {
+      // 纯邮箱地址
+      const email = part.toLowerCase()
+      if (validateEmail(email)) {
+        result.valid.push({ email })
+      } else {
+        result.invalid.push(part)
+      }
+    }
+  }
+
+  return result
+}
+
+/**
  * 同步结果
  */
 export interface SyncResult {

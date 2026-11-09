@@ -5,10 +5,10 @@
       <!-- 已添加地址标签 -->
       <span
         v-for="(addr, index) in addresses"
-        :key="addr"
+        :key="addr.email"
         class="address-tag"
       >
-        <span class="address-text">{{ addr }}</span>
+        <span class="address-text">{{ addr.name ? `"${addr.name}" <${addr.email}>` : addr.email }}</span>
         <button
           class="address-remove"
           @click="removeAddress(index)"
@@ -23,9 +23,11 @@
         :value="inputValue"
         :placeholder="addresses.length === 0 ? placeholder : ''"
         class="address-input-field"
+        :class="{ 'has-error': errorMessage }"
         @input="handleInput"
         @keydown="handleKeyDown"
         @blur="handleBlur"
+        @paste="handlePaste"
       />
 
       <!-- 自动补全下拉列表 -->
@@ -50,6 +52,8 @@
         </button>
       </div>
     </div>
+    <!-- 错误提示 -->
+    <p v-if="errorMessage" class="error-message">{{ errorMessage }}</p>
   </div>
 </template>
 
@@ -57,10 +61,12 @@
 import { ref, watch, onUnmounted } from 'vue'
 import { useContactsStore } from '@/stores/contacts'
 import type { Contact } from '@/services/contact/contactService'
+import type { EmailAddress } from '@/services/email/emailService'
+import { parseEmailAddresses } from '@/services/email/emailService'
 
 interface Props {
   label: string
-  modelValue: string[]
+  modelValue: EmailAddress[]
   placeholder?: string
 }
 
@@ -69,19 +75,21 @@ const props = withDefaults(defineProps<Props>(), {
 })
 
 const emit = defineEmits<{
-  'update:modelValue': [value: string[]]
+  'update:modelValue': [value: EmailAddress[]]
 }>()
 
 const contactsStore = useContactsStore()
 
 // 状态
 const inputValue = ref('')
-const addresses = ref<string[]>([...props.modelValue])
+const addresses = ref<EmailAddress[]>([...props.modelValue])
 const suggestions = ref<Contact[]>([])
 const showSuggestions = ref(false)
 const selectedIndex = ref(-1)
 const inputRef = ref<HTMLInputElement | null>(null)
 const containerRef = ref<HTMLDivElement | null>(null)
+const invalidAddresses = ref<string[]>([])  // 存储无效地址
+const errorMessage = ref('')  // 错误消息
 
 // 定时器
 let searchTimer: ReturnType<typeof setTimeout> | null = null
@@ -114,11 +122,41 @@ function handleInput(e: Event) {
   }
 }
 
-// 添加地址
-function addAddress(addr: string) {
-  const trimmed = addr.trim().toLowerCase()
-  if (trimmed && !addresses.value.includes(trimmed)) {
-    addresses.value = [...addresses.value, trimmed]
+// 添加地址（支持批量添加和验证）
+function addAddresses(input: string) {
+  const result = parseEmailAddresses(input)
+
+  if (result.invalid.length > 0) {
+    // 有无效地址，显示错误并拒绝添加
+    invalidAddresses.value = result.invalid
+    errorMessage.value = `无效的地址: ${result.invalid.join(', ')}`
+    return false
+  }
+
+  // 清除错误
+  invalidAddresses.value = []
+  errorMessage.value = ''
+
+  // 添加有效地址（去重）
+  for (const addr of result.valid) {
+    const exists = addresses.value.some(a => a.email === addr.email)
+    if (!exists) {
+      addresses.value.push(addr)
+    }
+  }
+
+  emit('update:modelValue', [...addresses.value])
+  inputValue.value = ''
+  suggestions.value = []
+  showSuggestions.value = false
+  return true
+}
+
+// 添加单个地址（从联系人选择）
+function addSingleAddress(addr: EmailAddress) {
+  const exists = addresses.value.some(a => a.email === addr.email)
+  if (!exists) {
+    addresses.value = [...addresses.value, addr]
     emit('update:modelValue', addresses.value)
   }
   inputValue.value = ''
@@ -135,17 +173,41 @@ function removeAddress(index: number) {
 
 // 选择补全建议
 function selectSuggestion(contact: Contact) {
-  addAddress(contact.email)
+  const addr: EmailAddress = {
+    email: contact.email,
+    name: contact.displayName || undefined
+  }
+  addSingleAddress(addr)
+}
+
+// 粘贴处理
+function handlePaste(e: ClipboardEvent) {
+  const text = e.clipboardData?.getData('text') || ''
+  if (text) {
+    e.preventDefault()
+    addAddresses(text)
+    inputRef.value?.focus()
+  }
 }
 
 // 键盘导航
 function handleKeyDown(e: KeyboardEvent) {
-  if (e.key === 'Enter' || e.key === 'Tab' || e.key === ',') {
+  // 逗号或分号：触发解析（截取分隔符前的内容）
+  if (e.key === ',' || e.key === ';') {
+    e.preventDefault()
+    const currentInput = inputValue.value.trim()
+    if (currentInput) {
+      addAddresses(currentInput)
+    }
+  } else if (e.key === 'Enter' || e.key === 'Tab') {
     e.preventDefault()
     if (showSuggestions.value && selectedIndex.value >= 0) {
-      addAddress(suggestions.value[selectedIndex.value].email)
+      // 从联系人列表选择
+      const contact = suggestions.value[selectedIndex.value]
+      selectSuggestion(contact)
     } else if (inputValue.value.trim()) {
-      addAddress(inputValue.value)
+      // 解析输入内容
+      addAddresses(inputValue.value)
     }
   } else if (e.key === 'Backspace' && !inputValue.value && addresses.value.length > 0) {
     removeAddress(addresses.value.length - 1)
@@ -157,6 +219,8 @@ function handleKeyDown(e: KeyboardEvent) {
     selectedIndex.value = Math.max(selectedIndex.value - 1, 0)
   } else if (e.key === 'Escape') {
     showSuggestions.value = false
+    invalidAddresses.value = []
+    errorMessage.value = ''
   }
 }
 
@@ -166,7 +230,7 @@ function handleBlur() {
   blurTimer = setTimeout(() => {
     showSuggestions.value = false
     if (inputValue.value.trim()) {
-      addAddress(inputValue.value)
+      addAddresses(inputValue.value)
     }
   }, 150)
 }
@@ -293,5 +357,16 @@ onUnmounted(() => {
 .suggestion-email {
   font-size: 0.75rem;
   color: var(--text-tertiary);
+}
+
+.address-input-field.has-error {
+  color: var(--danger);
+}
+
+.error-message {
+  font-size: 0.75rem;
+  color: var(--danger);
+  margin-top: 0.25rem;
+  margin-left: 3.5rem;
 }
 </style>
