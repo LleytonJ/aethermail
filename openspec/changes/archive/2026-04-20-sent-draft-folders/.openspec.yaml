@@ -1,0 +1,7 @@
+change: sent-draft-folders
+status: proposed
+created: 2026-04-20
+capabilities:
+  - sent-folder
+  - draft-folder
+  - email-storage

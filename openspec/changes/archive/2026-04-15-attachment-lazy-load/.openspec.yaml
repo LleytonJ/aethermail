@@ -1,0 +1,11 @@
+schema: opsx
+change: attachment-lazy-load
+status: proposed
+created: 2026-04-15
+artifacts:
+  - proposal.md
+  - design.md
+  - tasks.md
+  - specs/attachment-state/spec.md
+  - specs/imap-partial-fetch/spec.md
+  - specs/attachment-cache/spec.md
