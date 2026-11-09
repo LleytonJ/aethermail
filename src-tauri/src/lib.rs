@@ -202,6 +202,15 @@ pub fn run() {
                 }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("运行 Tauri 应用时出错");
+        .build(tauri::generate_context!())
+        .expect("运行 Tauri 应用时出错")
+        .run(|app_handle, event| {
+            // macOS: 点击 dock 图标时恢复窗口
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        });
 }
